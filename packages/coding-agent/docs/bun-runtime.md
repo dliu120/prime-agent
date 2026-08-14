@@ -58,6 +58,23 @@ Dependencies must already be resolvable from the skill or workspace. Automatic d
 
 Keep this fork's Python/IPython implementation unchanged wherever possible. After pulling `upstream/main`, evaluate changes to the shared execution contract, IPython tool behavior, host request handlers, rich output, and persistence. Mirror relevant behavior into the Bun adapter with parity tests instead of editing away the upstream path.
 
+### Last upstream review
+
+Reviewed on 2026-08-14 after fetching `upstream/main`.
+
+- Fork sync point: `9f9501146e869466acaca66dac49cff857b7b4f9`
+- Reviewed upstream head: `9f9501146e869466acaca66dac49cff857b7b4f9`
+- Commit range: `9f9501146e869466acaca66dac49cff857b7b4f9..9f9501146e869466acaca66dac49cff857b7b4f9` (empty)
+- Integration result: no merge or runtime port was required because `upstream/main` is already an ancestor of this branch and no upstream commits exist after the sync point.
+
+| Classification | Upstream changes | Disposition |
+| --- | --- | --- |
+| Already runtime-neutral | None | No change required. |
+| Python-specific | None | No IPython-only change to retain or document. |
+| Must also be implemented in Bun | None | No Bun port or new parity case required. |
+
+The existing shared contract continues to cover lazy startup, sequential state, streaming, results, rich output, typed host requests, error recovery, interruption/restart, namespace inspection, and snapshot/restore. Intentional differences remain those documented above: Python-backed skills belong to IPython, TypeScript-backed skills belong to Bun, and unsupported live values are recreated rather than restored.
+
 Run focused Bun tests from `packages/coding-agent`, then run the repository gate:
 
 ```bash
