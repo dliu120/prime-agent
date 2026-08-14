@@ -12,9 +12,9 @@ export interface ExecutionRuntimeContractFixture {
 	result: string;
 	error: string;
 	longRunning: string;
-	richOutput: string;
-	hostRequest: string;
-	persist: {
+	richOutput?: string;
+	hostRequest?: string;
+	persist?: {
 		assign: string;
 		read: string;
 		name: string;
@@ -23,6 +23,9 @@ export interface ExecutionRuntimeContractFixture {
 
 /** Shared behavioral suite for every model-facing execution runtime. */
 export function registerExecutionRuntimeContract(fixture: ExecutionRuntimeContractFixture): void {
+	const richOutput = fixture.richOutput;
+	const hostRequest = fixture.hostRequest;
+	const persist = fixture.persist;
 	it("starts lazily and preserves state across sequential cells", async () => {
 		const runtime = fixture.createRuntime();
 		try {
@@ -59,10 +62,11 @@ export function registerExecutionRuntimeContract(fixture: ExecutionRuntimeContra
 		}
 	});
 
-	it("returns structured diffs and attachments", async () => {
+	(richOutput ? it : it.skip)("returns structured diffs and attachments", async () => {
+		if (!richOutput) return;
 		const runtime = fixture.createRuntime();
 		try {
-			const output = await runtime.execute(fixture.richOutput);
+			const output = await runtime.execute(richOutput);
 			expect(output).toMatchObject({
 				status: "ok",
 				diffs: [{ path: "contract.txt", oldStr: "before", newStr: "after", startLine: 4 }],
@@ -73,13 +77,14 @@ export function registerExecutionRuntimeContract(fixture: ExecutionRuntimeContra
 		}
 	});
 
-	it("dispatches typed host requests while a cell is active", async () => {
+	(hostRequest ? it : it.skip)("dispatches typed host requests while a cell is active", async () => {
+		if (!hostRequest) return;
 		const hostHandlers: ExecutionHostRequestHandlers = {
 			"contract.echo": async (payload) => ({ echoed: payload.value }),
 		};
 		const runtime = fixture.createRuntime({ hostHandlers });
 		try {
-			await expect(runtime.execute(fixture.hostRequest)).resolves.toMatchObject({ status: "ok", result: "42" });
+			await expect(runtime.execute(hostRequest)).resolves.toMatchObject({ status: "ok", result: "42" });
 		} finally {
 			await runtime.dispose();
 		}
@@ -125,23 +130,28 @@ export function registerExecutionRuntimeContract(fixture: ExecutionRuntimeContra
 		}
 	});
 
-	it("snapshots serializable state and restores it into a fresh runtime", async () => {
-		const writer = fixture.createRuntime({ persistence: true });
-		try {
-			await writer.execute(fixture.persist.assign);
-			const snapshot = await writer.snapshotState();
-			expect(snapshot?.saved).toContain(fixture.persist.name);
-		} finally {
-			await writer.dispose();
-		}
+	(persist ? it : it.skip)(
+		"snapshots serializable state and restores it into a fresh runtime",
+		async () => {
+			if (!persist) return;
+			const writer = fixture.createRuntime({ persistence: true });
+			try {
+				await writer.execute(persist.assign);
+				const snapshot = await writer.snapshotState();
+				expect(snapshot?.saved).toContain(persist.name);
+			} finally {
+				await writer.dispose();
+			}
 
-		const reader = fixture.createRuntime({ persistence: true });
-		try {
-			const restore = await reader.restoreState();
-			expect(restore?.restored).toContain(fixture.persist.name);
-			await expect(reader.execute(fixture.persist.read)).resolves.toMatchObject({ status: "ok", result: "42" });
-		} finally {
-			await reader.dispose();
-		}
-	}, 30_000);
+			const reader = fixture.createRuntime({ persistence: true });
+			try {
+				const restore = await reader.restoreState();
+				expect(restore?.restored).toContain(persist.name);
+				await expect(reader.execute(persist.read)).resolves.toMatchObject({ status: "ok", result: "42" });
+			} finally {
+				await reader.dispose();
+			}
+		},
+		30_000,
+	);
 }

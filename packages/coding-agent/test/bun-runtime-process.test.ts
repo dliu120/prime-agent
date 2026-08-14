@@ -33,6 +33,63 @@ describe("BunRuntimeProcess", () => {
 		await expect(runtime.request({ type: "ping" })).resolves.toEqual({ type: "pong" });
 	});
 
+	it("executes TypeScript with top-level await and persistent state", async () => {
+		const runtime = createProcess();
+		await expect(
+			runtime.request({ type: "execute", code: "const answer: number = await Promise.resolve(41)" }),
+		).resolves.toMatchObject({ type: "execute_result", result: { status: "ok" } });
+		await expect(runtime.request({ type: "execute", code: "answer + 1" })).resolves.toMatchObject({
+			type: "execute_result",
+			result: { status: "ok", result: "42" },
+		});
+	});
+
+	it("correlates streamed output with its execution", async () => {
+		const runtime = createProcess();
+		const chunks: Array<{ chunk: string; name: "stdout" | "stderr" }> = [];
+		const response = await runtime.request(
+			{ type: "execute", code: 'console.log("out"); console.error("err"); 42' },
+			undefined,
+			(chunk, name) => chunks.push({ chunk, name }),
+		);
+
+		expect(chunks).toEqual([
+			{ chunk: "out\n", name: "stdout" },
+			{ chunk: "err\n", name: "stderr" },
+		]);
+		expect(response).toMatchObject({
+			type: "execute_result",
+			result: { status: "ok", stdout: "out\n", stderr: "err\n", result: "42" },
+		});
+	});
+
+	it("serializes concurrent executions", async () => {
+		const runtime = createProcess();
+		const first = runtime.request({
+			type: "execute",
+			code: "await new Promise((resolve) => setTimeout(resolve, 25)); const sequence: number[] = [1]",
+		});
+		const second = runtime.request({ type: "execute", code: "sequence.push(2); sequence" });
+
+		await expect(first).resolves.toMatchObject({ type: "execute_result", result: { status: "ok" } });
+		await expect(second).resolves.toMatchObject({
+			type: "execute_result",
+			result: { status: "ok", result: "[ 1, 2 ]" },
+		});
+	});
+
+	it("returns execution errors without killing or poisoning the worker", async () => {
+		const runtime = createProcess();
+		await expect(runtime.request({ type: "execute", code: 'throw new Error("failed")' })).resolves.toMatchObject({
+			type: "execute_result",
+			result: { status: "error", error: { ename: "Error", evalue: "failed" } },
+		});
+		await expect(runtime.request({ type: "execute", code: "40 + 2" })).resolves.toMatchObject({
+			type: "execute_result",
+			result: { status: "ok", result: "42" },
+		});
+	});
+
 	it("shuts down gracefully and can start again", async () => {
 		const runtime = createProcess();
 		await runtime.start();

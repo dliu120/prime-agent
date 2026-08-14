@@ -20,6 +20,7 @@ export const BUN_RUNTIME_WORKER_ROLE_ENV = "PRIME_AGENT_INTERNAL_BUN_RUNTIME_WOR
 interface PendingRequest {
 	resolve: (response: BunRuntimeResponse) => void;
 	reject: (error: Error) => void;
+	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
 }
 
 export interface BunRuntimeProcessOptions {
@@ -127,13 +128,17 @@ export class BunRuntimeProcess {
 		}
 	}
 
-	async request(request: BunRuntimeRequest, signal?: AbortSignal): Promise<BunRuntimeResponse> {
+	async request(
+		request: BunRuntimeRequest,
+		signal?: AbortSignal,
+		onStream?: (chunk: string, name: "stdout" | "stderr") => void,
+	): Promise<BunRuntimeResponse> {
 		await this.start(signal);
 		const child = this.child;
 		if (!child || !this.isRunning) throw new Error("Bun runtime is not running");
 		const id = uuid();
 		const response = new Promise<BunRuntimeResponse>((resolve, reject) => {
-			this.pending.set(id, { resolve, reject });
+			this.pending.set(id, { resolve, reject, onStream });
 		});
 		const message = { version: BUN_RUNTIME_PROTOCOL_VERSION, type: "request" as const, id, request };
 		try {
@@ -187,6 +192,10 @@ export class BunRuntimeProcess {
 		}
 		const pending = this.pending.get(message.id);
 		if (!pending) return;
+		if (message.type === "stream") {
+			pending.onStream?.(message.chunk, message.name);
+			return;
+		}
 		this.pending.delete(message.id);
 		if (message.type === "error") pending.reject(new Error(message.error));
 		else pending.resolve(message.response);

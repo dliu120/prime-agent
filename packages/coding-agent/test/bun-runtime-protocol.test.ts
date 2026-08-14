@@ -58,4 +58,43 @@ describe("Bun runtime protocol", () => {
 			error: "execution failed",
 		});
 	});
+
+	it("validates execution requests, stream events, and results", () => {
+		expect(
+			parseBunRuntimeHostMessage({
+				version: BUN_RUNTIME_PROTOCOL_VERSION,
+				type: "request",
+				id: "execute-1",
+				request: { type: "execute", code: "42", maxOutputChars: 1024 },
+			}),
+		).not.toBeNull();
+		expect(
+			parseBunRuntimeWorkerMessage({
+				version: BUN_RUNTIME_PROTOCOL_VERSION,
+				type: "stream",
+				id: "execute-1",
+				name: "stdout",
+				chunk: "hello\n",
+			}),
+		).not.toBeNull();
+		expect(
+			parseBunRuntimeWorkerMessage({
+				version: BUN_RUNTIME_PROTOCOL_VERSION,
+				type: "response",
+				id: "execute-1",
+				response: {
+					type: "execute_result",
+					result: { stdout: "", stderr: "", status: "ok", result: "42", durationMs: 1 },
+				},
+			}),
+		).not.toBeNull();
+		expect(
+			parseBunRuntimeHostMessage({
+				version: BUN_RUNTIME_PROTOCOL_VERSION,
+				type: "request",
+				id: "execute-2",
+				request: { type: "execute", code: "42", maxOutputChars: 0 },
+			}),
+		).toBeNull();
+	});
 });

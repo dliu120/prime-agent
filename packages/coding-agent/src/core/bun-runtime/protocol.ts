@@ -28,11 +28,40 @@ export interface BunRuntimeErrorMessage {
 	error: string;
 }
 
-export type BunRuntimeHostMessage = BunRuntimeRequestMessage;
-export type BunRuntimeWorkerMessage = BunRuntimeReadyMessage | BunRuntimeResponseMessage | BunRuntimeErrorMessage;
+export interface BunRuntimeStreamMessage {
+	version: typeof BUN_RUNTIME_PROTOCOL_VERSION;
+	type: "stream";
+	id: string;
+	name: "stdout" | "stderr";
+	chunk: string;
+}
 
-export type BunRuntimeRequest = { type: "ping" } | { type: "shutdown" };
-export type BunRuntimeResponse = { type: "pong" } | { type: "shutting_down" };
+export type BunRuntimeHostMessage = BunRuntimeRequestMessage;
+export type BunRuntimeWorkerMessage =
+	| BunRuntimeReadyMessage
+	| BunRuntimeResponseMessage
+	| BunRuntimeErrorMessage
+	| BunRuntimeStreamMessage;
+
+export type BunRuntimeRequest =
+	| { type: "ping" }
+	| { type: "shutdown" }
+	| { type: "list_namespace" }
+	| { type: "execute"; code: string; maxOutputChars?: number };
+export type BunRuntimeResponse =
+	| { type: "pong" }
+	| { type: "shutting_down" }
+	| { type: "namespace"; names: string[] }
+	| { type: "execute_result"; result: BunRuntimeExecutionResult };
+
+export interface BunRuntimeExecutionResult {
+	stdout: string;
+	stderr: string;
+	result?: string;
+	status: "ok" | "error" | "aborted";
+	error?: { ename: string; evalue: string; traceback: string[] };
+	durationMs: number;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -43,11 +72,40 @@ function hasProtocolEnvelope(value: unknown): value is Record<string, unknown> &
 }
 
 function isRequest(value: unknown): value is BunRuntimeRequest {
-	return isRecord(value) && (value.type === "ping" || value.type === "shutdown");
+	if (!isRecord(value)) return false;
+	if (value.type === "ping" || value.type === "shutdown" || value.type === "list_namespace") return true;
+	return (
+		value.type === "execute" &&
+		typeof value.code === "string" &&
+		(value.maxOutputChars === undefined ||
+			(Number.isSafeInteger(value.maxOutputChars) && (value.maxOutputChars as number) > 0))
+	);
 }
 
 function isResponse(value: unknown): value is BunRuntimeResponse {
-	return isRecord(value) && (value.type === "pong" || value.type === "shutting_down");
+	if (!isRecord(value)) return false;
+	if (value.type === "pong" || value.type === "shutting_down") return true;
+	if (value.type === "namespace") return isStringArray(value.names);
+	return value.type === "execute_result" && isExecutionResult(value.result);
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isExecutionResult(value: unknown): value is BunRuntimeExecutionResult {
+	if (!isRecord(value)) return false;
+	if (typeof value.stdout !== "string" || typeof value.stderr !== "string") return false;
+	if (value.result !== undefined && typeof value.result !== "string") return false;
+	if (value.status !== "ok" && value.status !== "error" && value.status !== "aborted") return false;
+	if (typeof value.durationMs !== "number" || !Number.isFinite(value.durationMs) || value.durationMs < 0) return false;
+	if (value.error === undefined) return true;
+	return (
+		isRecord(value.error) &&
+		typeof value.error.ename === "string" &&
+		typeof value.error.evalue === "string" &&
+		isStringArray(value.error.traceback)
+	);
 }
 
 export function parseBunRuntimeHostMessage(value: unknown): BunRuntimeHostMessage | null {
@@ -70,6 +128,19 @@ export function parseBunRuntimeWorkerMessage(value: unknown): BunRuntimeWorkerMe
 		return { version: BUN_RUNTIME_PROTOCOL_VERSION, type: "ready", bunVersion: value.bunVersion };
 	}
 	if (typeof value.id !== "string" || !value.id) return null;
+	if (
+		value.type === "stream" &&
+		(value.name === "stdout" || value.name === "stderr") &&
+		typeof value.chunk === "string"
+	) {
+		return {
+			version: BUN_RUNTIME_PROTOCOL_VERSION,
+			type: "stream",
+			id: value.id,
+			name: value.name,
+			chunk: value.chunk,
+		};
+	}
 	if (value.type === "response" && isResponse(value.response)) {
 		return {
 			version: BUN_RUNTIME_PROTOCOL_VERSION,

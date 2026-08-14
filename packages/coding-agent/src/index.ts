@@ -21,6 +21,7 @@ export {
 	InMemoryAuthStorageBackend,
 	type OAuthCredential,
 } from "./core/auth-storage.js";
+export { BunExecutionRuntime } from "./core/bun-runtime/runtime.js";
 // Compaction
 export {
 	type BranchPreparation,

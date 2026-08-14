@@ -1,4 +1,5 @@
 import { attachJsonlLineReader } from "../../modes/rpc/jsonl.js";
+import { BunCellEvaluator } from "./evaluator.js";
 import {
 	BUN_RUNTIME_MAX_LINE_CHARS,
 	BUN_RUNTIME_PROTOCOL_VERSION,
@@ -19,6 +20,21 @@ function fail(id: string, error: string): void {
 	send({ version: BUN_RUNTIME_PROTOCOL_VERSION, type: "error", id, error });
 }
 
+let executionQueue: Promise<void> = Promise.resolve();
+const evaluator = new BunCellEvaluator();
+
+function execute(id: string, code: string, maxOutputChars?: number): void {
+	const execution = executionQueue.then(async () => {
+		const result = await evaluator.execute(code, {
+			maxOutputChars,
+			onStream: (chunk, name) => send({ version: BUN_RUNTIME_PROTOCOL_VERSION, type: "stream", id, chunk, name }),
+		});
+		respond(id, { type: "execute_result", result });
+	});
+	executionQueue = execution.catch(() => undefined);
+	void execution.catch((error: unknown) => fail(id, error instanceof Error ? error.message : String(error)));
+}
+
 function handleLine(line: string): void {
 	const message = decodeBunRuntimeHostLine(line);
 	if (!message) {
@@ -33,6 +49,12 @@ function handleLine(line: string): void {
 			case "shutdown":
 				respond(message.id, { type: "shutting_down" });
 				process.stdin.pause();
+				return;
+			case "list_namespace":
+				respond(message.id, { type: "namespace", names: evaluator.listNamespaceNames() });
+				return;
+			case "execute":
+				execute(message.id, message.request.code, message.request.maxOutputChars);
 				return;
 		}
 	} catch (error) {
