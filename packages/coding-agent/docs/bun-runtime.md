@@ -19,7 +19,7 @@ Without `--tools`, Prime Agent continues to expose only `ipython`. Existing Pyth
 - Runs TypeScript in an isolated Bun subprocess over versioned JSONL IPC.
 - Preserves top-level variables, functions, classes, and static imports across sequential cells.
 - Supports top-level `await`, streamed `console` output, structured errors, and restart after interruption.
-- Exposes Bun APIs through the `Bun` global.
+- Exposes Bun APIs through the `Bun` global, including `Bun.$` and `Bun.spawn` for project commands.
 - Exposes `prime.hostRequest(method, payload)`, `prime.displayDiff(diff)`, and `prime.attach(attachment)` for typed host capabilities and rich output.
 - Discovers TypeScript-backed skills and loads their module namespace into the persistent runtime.
 - Snapshots each binding independently with V8 serialization. Unsupported live values are skipped and reported rather than invalidating serializable state.

@@ -51,4 +51,12 @@ describe("BunCellEvaluator", () => {
 			result: "[ 'string', 'undefined' ]",
 		});
 	});
+
+	it("runs shell commands through Bun APIs", async () => {
+		const evaluator = new BunCellEvaluator();
+		await expect(evaluator.execute("await Bun.$`printf bun-shell`.text()")).resolves.toMatchObject({
+			status: "ok",
+			result: "'bun-shell'",
+		});
+	});
 });
