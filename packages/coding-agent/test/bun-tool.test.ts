@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -31,5 +31,26 @@ describe("bun tool", () => {
 			details: { status: "ok", result: "42" },
 			isError: false,
 		});
+	});
+
+	it("loads TypeScript-backed skills into the persistent namespace", async () => {
+		const skillDir = mkdtempSync(join(tmpdir(), "prime-agent-bun-skill-"));
+		directories.push(skillDir);
+		mkdirSync(join(skillDir, "src"), { recursive: true });
+		const entryPath = join(skillDir, "src", "index.ts");
+		writeFileSync(entryPath, "export const answer: number = 42;\n");
+		const provisioner = new BunRuntimeProvisioner(process.cwd(), {
+			typescriptSkills: [
+				{
+					name: "typed-skill",
+					importName: "typed_skill",
+					packagePath: skillDir,
+					entryPath,
+					packageJsonPath: join(skillDir, "package.json"),
+				},
+			],
+		});
+		provisioners.push(provisioner);
+		await expect(provisioner.execute("typed_skill.answer")).resolves.toMatchObject({ status: "ok", result: "42" });
 	});
 });

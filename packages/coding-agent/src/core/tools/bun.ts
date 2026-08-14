@@ -6,6 +6,7 @@ import { type Static, Type } from "typebox";
 import { BunExecutionRuntime, type BunExecutionRuntimeOptions } from "../bun-runtime/runtime.js";
 import type { ExecutionHostRequestHandlers, ExecutionResult } from "../execution-runtime.js";
 import type { ToolDefinition } from "../extensions/types.js";
+import type { TypeScriptSkillRuntimeInfo } from "../skills.js";
 import { imageBlocksFromAttachments } from "./ipython.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
@@ -22,6 +23,7 @@ export interface BunToolOptions {
 	hostHandlers?: ExecutionHostRequestHandlers;
 	snapshotDir?: string;
 	readyGate?: Promise<unknown>;
+	typescriptSkills?: readonly TypeScriptSkillRuntimeInfo[];
 	provisioner?: BunRuntimeProvisioner;
 }
 
@@ -32,6 +34,7 @@ function snapshotPaths(directory: string): { path: string; manifestPath: string 
 export class BunRuntimeProvisioner {
 	private runtime?: BunExecutionRuntime;
 	private restored = false;
+	private bootstrapped = false;
 
 	constructor(
 		private readonly cwd: string,
@@ -57,6 +60,18 @@ export class BunRuntimeProvisioner {
 			const paths = snapshotPaths(this.options.snapshotDir);
 			if (existsSync(paths.path) && existsSync(paths.manifestPath)) await runtime.restoreState();
 		}
+		if (!this.bootstrapped) {
+			this.bootstrapped = true;
+			for (const skill of this.options.typescriptSkills ?? []) {
+				const code = `import * as ${skill.importName} from ${JSON.stringify(skill.entryPath)}`;
+				const result = await runtime.execute(code, { signal });
+				if (result.status !== "ok") {
+					throw new Error(
+						`Failed to load TypeScript skill ${skill.name}: ${result.error?.evalue ?? result.stderr}`,
+					);
+				}
+			}
+		}
 		return runtime;
 	}
 
@@ -77,6 +92,7 @@ export class BunRuntimeProvisioner {
 		await this.runtime.dispose();
 		this.runtime = undefined;
 		this.restored = false;
+		this.bootstrapped = false;
 	}
 }
 

@@ -259,7 +259,7 @@ import {
 } from "./session-manager.js";
 import type { SessionStats } from "./session-stats.js";
 import type { SettingsManager } from "./settings-manager.js";
-import { getPythonSkillRuntimeInfo, type Skill } from "./skills.js";
+import { getPythonSkillRuntimeInfo, getTypeScriptSkillRuntimeInfo, type Skill } from "./skills.js";
 import {
 	parseRefineCommandOptions,
 	parseSessionSlashCommand,
@@ -8639,6 +8639,7 @@ export class AgentSession {
 		includeAllExtensionTools?: boolean;
 	}): void {
 		const pythonSkills = getPythonSkillRuntimeInfo(this._modelVisibleSkills());
+		const typescriptSkills = getTypeScriptSkillRuntimeInfo(this._modelVisibleSkills());
 		let configuredBaseToolDefinitions: Record<string, ToolDefinition>;
 		if (this._baseToolsOverride) {
 			configuredBaseToolDefinitions = Object.fromEntries(
@@ -8672,6 +8673,7 @@ export class AgentSession {
 				hostHandlers: this._createKernelHostHandlers(),
 				snapshotDir: this._ipythonKernelSnapshotDir,
 				readyGate: previousBunDispose,
+				typescriptSkills,
 			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
 				ipython: {

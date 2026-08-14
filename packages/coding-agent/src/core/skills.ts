@@ -77,12 +77,19 @@ export interface SkillFrontmatter {
 	[key: string]: unknown;
 }
 
-export type SkillKind = "markdown" | "python";
+export type SkillKind = "markdown" | "python" | "typescript";
 
 export interface SkillPythonMetadata {
 	importName: string;
 	packagePath: string;
 	pyprojectPath: string;
+}
+
+export interface SkillTypeScriptMetadata {
+	importName: string;
+	packagePath: string;
+	entryPath: string;
+	packageJsonPath: string;
 }
 
 interface BaseSkill {
@@ -104,9 +111,18 @@ export interface PythonSkill extends BaseSkill {
 	python: SkillPythonMetadata;
 }
 
-export type Skill = MarkdownSkill | PythonSkill;
+export interface TypeScriptSkill extends BaseSkill {
+	kind: "typescript";
+	typescript: SkillTypeScriptMetadata;
+}
+
+export type Skill = MarkdownSkill | PythonSkill | TypeScriptSkill;
 
 export interface PythonSkillRuntimeInfo extends SkillPythonMetadata {
+	name: string;
+}
+
+export interface TypeScriptSkillRuntimeInfo extends SkillTypeScriptMetadata {
 	name: string;
 }
 
@@ -253,6 +269,36 @@ function detectPythonSkill(
 	};
 }
 
+function detectTypeScriptSkill(
+	skillDir: string,
+	name: string,
+	diagnostics: ResourceDiagnostic[],
+): SkillTypeScriptMetadata | null {
+	const packageJsonPath = join(skillDir, "package.json");
+	if (!existsSync(packageJsonPath)) return null;
+	const importName = pythonImportNameForSkill(name);
+	if (!isValidPythonImportName(importName)) {
+		diagnostics.push({
+			type: "warning",
+			message: `typescript skill import name "${importName}" is invalid`,
+			path: packageJsonPath,
+		});
+		return null;
+	}
+	const entryPath = join(skillDir, "src", "index.ts");
+	try {
+		if (!statSync(packageJsonPath).isFile() || !statSync(entryPath).isFile()) throw new Error();
+	} catch {
+		diagnostics.push({
+			type: "warning",
+			message: "typescript skill entry src/index.ts not found",
+			path: packageJsonPath,
+		});
+		return null;
+	}
+	return { importName, packagePath: skillDir, entryPath, packageJsonPath };
+}
+
 export function getPythonSkillRuntimeInfo(skills: readonly Skill[]): PythonSkillRuntimeInfo[] {
 	return skills
 		.filter((skill): skill is PythonSkill => skill.kind === "python")
@@ -262,6 +308,12 @@ export function getPythonSkillRuntimeInfo(skills: readonly Skill[]): PythonSkill
 			packagePath: skill.python.packagePath,
 			pyprojectPath: skill.python.pyprojectPath,
 		}));
+}
+
+export function getTypeScriptSkillRuntimeInfo(skills: readonly Skill[]): TypeScriptSkillRuntimeInfo[] {
+	return skills
+		.filter((skill): skill is TypeScriptSkill => skill.kind === "typescript")
+		.map((skill) => ({ name: skill.name, ...skill.typescript }));
 }
 
 /**
@@ -419,6 +471,8 @@ function loadSkillFromFile(
 		}
 
 		const python = basename(filePath) === "SKILL.md" ? detectPythonSkill(skillDir, name, diagnostics) : null;
+		const typescript =
+			basename(filePath) === "SKILL.md" && !python ? detectTypeScriptSkill(skillDir, name, diagnostics) : null;
 		const baseSkill: BaseSkill = {
 			name,
 			description: frontmatter.description,
@@ -429,7 +483,11 @@ function loadSkillFromFile(
 		};
 
 		return {
-			skill: python ? { ...baseSkill, kind: "python", python } : { ...baseSkill, kind: "markdown" },
+			skill: python
+				? { ...baseSkill, kind: "python", python }
+				: typescript
+					? { ...baseSkill, kind: "typescript", typescript }
+					: { ...baseSkill, kind: "markdown" },
 			diagnostics,
 		};
 	} catch (error) {
@@ -456,8 +514,9 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
 
 	const lines = [
 		"\n\nThe following skills provide specialized instructions for specific tasks.",
-		"Use ipython to inspect a skill's file when the task matches its description.",
+		"Use an active notebook or shell tool to inspect a skill's file when the task matches its description.",
 		"Skills with a python_import are prepared in the persistent IPython kernel when available and can be called directly by that import name.",
+		"Skills with a typescript_import are prepared in the persistent Bun runtime when available and can be called through that module namespace.",
 		"When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
 		"",
 		"<available_skills>",
@@ -469,6 +528,9 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
 		lines.push(`    <type>${skill.kind}</type>`);
 		if (skill.kind === "python") {
 			lines.push(`    <python_import>${escapeXml(skill.python.importName)}</python_import>`);
+		}
+		if (skill.kind === "typescript") {
+			lines.push(`    <typescript_import>${escapeXml(skill.typescript.importName)}</typescript_import>`);
 		}
 		lines.push(`    <description>${escapeXml(skill.description)}</description>`);
 		lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
