@@ -501,7 +501,7 @@ export class IpythonKernelProvisioner {
 					// Disposed while queued for the permit — don't spawn a kernel nobody wants.
 					if (startupSignal.aborted) throw new Error("Kernel provisioner disposed before start");
 					return m.start({
-						onBootstrapProgress: (message) => this.emitStartupProgress(message),
+						onProgress: (message) => this.emitStartupProgress(message),
 						signal: startupSignal,
 					});
 				}, startupSignal);

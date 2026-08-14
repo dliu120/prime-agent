@@ -45,6 +45,21 @@ export {
 	shouldCompact,
 } from "./core/compaction/index.js";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.js";
+export type {
+	ExecutionAttachment,
+	ExecutionDiff,
+	ExecutionError,
+	ExecutionHostRequestHandler,
+	ExecutionHostRequestHandlers,
+	ExecutionOptions,
+	ExecutionRestoreResult,
+	ExecutionResult,
+	ExecutionRuntime,
+	ExecutionRuntimeStartOptions,
+	ExecutionSentAgentMessage,
+	ExecutionSnapshotResult,
+} from "./core/execution-runtime.js";
+export { ExecutionRuntimeBusyError } from "./core/execution-runtime.js";
 // Extension system
 export type {
 	AgentEndEvent,
