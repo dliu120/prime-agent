@@ -1,5 +1,6 @@
 import { attachJsonlLineReader } from "../../modes/rpc/jsonl.js";
 import { BunCellEvaluator } from "./evaluator.js";
+import { restoreBunState, snapshotBunState } from "./persistence.js";
 import {
 	BUN_RUNTIME_MAX_LINE_CHARS,
 	BUN_RUNTIME_PROTOCOL_VERSION,
@@ -35,6 +36,24 @@ function execute(id: string, code: string, maxOutputChars?: number): void {
 	void execution.catch((error: unknown) => fail(id, error instanceof Error ? error.message : String(error)));
 }
 
+function snapshot(id: string, path: string, manifestPath: string): void {
+	const operation = executionQueue.then(async () => {
+		const result = await snapshotBunState(evaluator, path, manifestPath);
+		respond(id, { type: "snapshot_result", result });
+	});
+	executionQueue = operation.catch(() => undefined);
+	void operation.catch((error: unknown) => fail(id, error instanceof Error ? error.message : String(error)));
+}
+
+function restore(id: string, path: string, manifestPath: string): void {
+	const operation = executionQueue.then(async () => {
+		const result = await restoreBunState(evaluator, path, manifestPath);
+		respond(id, { type: "restore_result", result });
+	});
+	executionQueue = operation.catch(() => undefined);
+	void operation.catch((error: unknown) => fail(id, error instanceof Error ? error.message : String(error)));
+}
+
 function handleLine(line: string): void {
 	const message = decodeBunRuntimeHostLine(line);
 	if (!message) {
@@ -52,6 +71,12 @@ function handleLine(line: string): void {
 				return;
 			case "list_namespace":
 				respond(message.id, { type: "namespace", names: evaluator.listNamespaceNames() });
+				return;
+			case "snapshot":
+				snapshot(message.id, message.request.path, message.request.manifestPath);
+				return;
+			case "restore":
+				restore(message.id, message.request.path, message.request.manifestPath);
 				return;
 			case "execute":
 				execute(message.id, message.request.code, message.request.maxOutputChars);

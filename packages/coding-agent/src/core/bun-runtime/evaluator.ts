@@ -123,4 +123,14 @@ export class BunCellEvaluator {
 	listNamespaceNames(): string[] {
 		return [...this.namespaceNames].sort();
 	}
+
+	getNamespaceValue(name: string): unknown {
+		if (!this.namespaceNames.has(name)) throw new Error(`Unknown Bun runtime binding: ${name}`);
+		return Reflect.get(this.context, name);
+	}
+
+	setNamespaceValue(name: string, value: unknown): void {
+		Reflect.set(this.context, name, value);
+		this.namespaceNames.add(name);
+	}
 }

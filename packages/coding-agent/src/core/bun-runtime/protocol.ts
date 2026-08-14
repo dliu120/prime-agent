@@ -47,12 +47,29 @@ export type BunRuntimeRequest =
 	| { type: "ping" }
 	| { type: "shutdown" }
 	| { type: "list_namespace" }
+	| { type: "snapshot"; path: string; manifestPath: string }
+	| { type: "restore"; path: string; manifestPath: string }
 	| { type: "execute"; code: string; maxOutputChars?: number };
 export type BunRuntimeResponse =
 	| { type: "pong" }
 	| { type: "shutting_down" }
 	| { type: "namespace"; names: string[] }
+	| { type: "snapshot_result"; result: BunRuntimeSnapshotResult }
+	| { type: "restore_result"; result: BunRuntimeRestoreResult }
 	| { type: "execute_result"; result: BunRuntimeExecutionResult };
+
+export interface BunRuntimeSnapshotResult {
+	saved: string[];
+	skipped: Array<{ name: string; reason: string }>;
+	bytes: number;
+	path: string;
+}
+
+export interface BunRuntimeRestoreResult {
+	restored: string[];
+	failed: Array<{ name: string; reason: string }>;
+	path: string;
+}
 
 export interface BunRuntimeExecutionResult {
 	stdout: string;
@@ -74,6 +91,14 @@ function hasProtocolEnvelope(value: unknown): value is Record<string, unknown> &
 function isRequest(value: unknown): value is BunRuntimeRequest {
 	if (!isRecord(value)) return false;
 	if (value.type === "ping" || value.type === "shutdown" || value.type === "list_namespace") return true;
+	if (value.type === "snapshot" || value.type === "restore") {
+		return (
+			typeof value.path === "string" &&
+			Boolean(value.path) &&
+			typeof value.manifestPath === "string" &&
+			Boolean(value.manifestPath)
+		);
+	}
 	return (
 		value.type === "execute" &&
 		typeof value.code === "string" &&
@@ -86,7 +111,36 @@ function isResponse(value: unknown): value is BunRuntimeResponse {
 	if (!isRecord(value)) return false;
 	if (value.type === "pong" || value.type === "shutting_down") return true;
 	if (value.type === "namespace") return isStringArray(value.names);
+	if (value.type === "snapshot_result") return isSnapshotResult(value.result);
+	if (value.type === "restore_result") return isRestoreResult(value.result);
 	return value.type === "execute_result" && isExecutionResult(value.result);
+}
+
+function isNamedReasonArray(value: unknown): value is Array<{ name: string; reason: string }> {
+	return (
+		Array.isArray(value) &&
+		value.every((entry) => isRecord(entry) && typeof entry.name === "string" && typeof entry.reason === "string")
+	);
+}
+
+function isSnapshotResult(value: unknown): value is BunRuntimeSnapshotResult {
+	return (
+		isRecord(value) &&
+		isStringArray(value.saved) &&
+		isNamedReasonArray(value.skipped) &&
+		Number.isSafeInteger(value.bytes) &&
+		(value.bytes as number) >= 0 &&
+		typeof value.path === "string"
+	);
+}
+
+function isRestoreResult(value: unknown): value is BunRuntimeRestoreResult {
+	return (
+		isRecord(value) &&
+		isStringArray(value.restored) &&
+		isNamedReasonArray(value.failed) &&
+		typeof value.path === "string"
+	);
 }
 
 function isStringArray(value: unknown): value is string[] {

@@ -8,6 +8,10 @@ import type {
 } from "../execution-runtime.js";
 import { BunRuntimeProcess, type BunRuntimeProcessOptions } from "./process.js";
 
+export interface BunExecutionRuntimeOptions extends BunRuntimeProcessOptions {
+	snapshot?: { path: string; manifestPath: string };
+}
+
 function abortedResult(started: number): ExecutionResult {
 	return { stdout: "", stderr: "", status: "aborted", durationMs: Date.now() - started };
 }
@@ -16,7 +20,7 @@ export class BunExecutionRuntime implements ExecutionRuntime {
 	private process: BunRuntimeProcess;
 	private activeAbort?: () => Promise<void>;
 
-	constructor(private readonly options: BunRuntimeProcessOptions = {}) {
+	constructor(private readonly options: BunExecutionRuntimeOptions = {}) {
 		this.process = new BunRuntimeProcess(options);
 	}
 
@@ -84,10 +88,16 @@ export class BunExecutionRuntime implements ExecutionRuntime {
 	}
 
 	async snapshotState(): Promise<ExecutionSnapshotResult | null> {
-		return null;
+		if (!this.options.snapshot) return null;
+		const response = await this.process.request({ type: "snapshot", ...this.options.snapshot });
+		if (response.type !== "snapshot_result") throw new Error("Bun runtime returned an invalid snapshot response");
+		return response.result;
 	}
 
 	async restoreState(): Promise<ExecutionRestoreResult | null> {
-		return null;
+		if (!this.options.snapshot) return null;
+		const response = await this.process.request({ type: "restore", ...this.options.snapshot });
+		if (response.type !== "restore_result") throw new Error("Bun runtime returned an invalid restore response");
+		return response.result;
 	}
 }
