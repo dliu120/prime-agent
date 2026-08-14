@@ -75,6 +75,7 @@ export class BunCellEvaluator {
 			this.onStream?.(chunk, name);
 		};
 		this.context = vm.createContext({
+			Bun: bunApi(),
 			__primeImport: importModule,
 			console: {
 				log: (...values: unknown[]) => write("stdout", values),

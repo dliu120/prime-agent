@@ -270,6 +270,7 @@ import {
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.js";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.js";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.js";
+import { BunRuntimeProvisioner } from "./tools/bun.js";
 import { createAllToolDefinitions } from "./tools/index.js";
 import { IpythonKernelProvisioner } from "./tools/ipython.js";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.js";
@@ -1200,6 +1201,7 @@ export class AgentSession {
 	private _disposing = false;
 	private _disposeAsyncPromise?: Promise<void>;
 	private _ipythonKernelProvisioner?: IpythonKernelProvisioner;
+	private _bunRuntimeProvisioner?: BunRuntimeProvisioner;
 	/** Artifact dir backing the current provisioner's kernel snapshot, if any. */
 	private _ipythonKernelSnapshotDir?: string;
 	/** True once the runtime has been built once; later builds are in-process rebuilds (/reload). */
@@ -3949,6 +3951,7 @@ export class AgentSession {
 		} catch {
 			// a failed kernel startup already cleaned up after itself
 		}
+		await this._bunRuntimeProvisioner?.dispose().catch(() => undefined);
 		this.dispose();
 		await this._disposeCallbacksPromise;
 	}
@@ -8650,6 +8653,7 @@ export class AgentSession {
 			// startup on the old one's dispose (which flushes a final snapshot), so a
 			// reload can't restore from a snapshot the old kernel is still writing.
 			const previousDispose = this._ipythonKernelProvisioner?.dispose();
+			const previousBunDispose = this._bunRuntimeProvisioner?.dispose();
 			this._ipythonKernelSnapshotDir = this.sessionManager.getSessionArtifactDir();
 			// Only surface the "revived from your previous session" notice on the first
 			// build (a genuine resume). A later rebuild (/reload) restores state silently
@@ -8664,6 +8668,11 @@ export class AgentSession {
 				readyGate: previousDispose,
 				onRestore: notifyRestore ? (result) => this._onIpythonStateRestored(result) : undefined,
 			});
+			this._bunRuntimeProvisioner = new BunRuntimeProvisioner(this._cwd, {
+				hostHandlers: this._createKernelHostHandlers(),
+				snapshotDir: this._ipythonKernelSnapshotDir,
+				readyGate: previousBunDispose,
+			});
 			configuredBaseToolDefinitions = createAllToolDefinitions(this._cwd, {
 				ipython: {
 					provisioner: this._ipythonKernelProvisioner,
@@ -8672,6 +8681,7 @@ export class AgentSession {
 					onLateSentAgentMessage: (toolCallId, message) =>
 						this._recordLateIpythonSentAgentMessage(toolCallId, message),
 				},
+				bun: { provisioner: this._bunRuntimeProvisioner },
 			});
 		}
 

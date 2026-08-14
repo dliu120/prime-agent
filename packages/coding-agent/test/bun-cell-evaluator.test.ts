@@ -43,4 +43,12 @@ describe("BunCellEvaluator", () => {
 		});
 		expect(await evaluator.execute("40 + 2")).toMatchObject({ status: "ok", result: "42" });
 	});
+
+	it("exposes Bun APIs without exposing the host process", async () => {
+		const evaluator = new BunCellEvaluator();
+		await expect(evaluator.execute("[typeof Bun.version, typeof process]")).resolves.toMatchObject({
+			status: "ok",
+			result: "[ 'string', 'undefined' ]",
+		});
+	});
 });

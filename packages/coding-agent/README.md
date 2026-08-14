@@ -70,6 +70,8 @@ Then just talk to Prime Agent. By default, Prime Agent gives the model one tool:
 
 The Python kernel runtime is set up automatically on first invocation. Set `PRIME_AGENT_KERNEL_PYTHON` to use an existing Python environment with `ipykernel`.
 
+This fork also provides an experimental, opt-in TypeScript runtime. Start with `prime-agent --tools bun` to expose only the persistent Bun notebook, or `prime-agent --tools ipython,bun` to expose both runtimes. IPython remains the default and continues to host existing Python-backed skills. See [Bun runtime](docs/bun-runtime.md) for supported behavior and current limitations.
+
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
 ## Providers & Models
@@ -580,7 +582,7 @@ Use `prime-agent session export <file> [output]` to export a saved session to HT
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools by default |
 
-Available built-in tools: `ipython`
+Available built-in tools: `ipython`, `bun` (experimental and opt-in)
 
 ### Resource Options
 
