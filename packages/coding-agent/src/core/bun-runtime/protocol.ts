@@ -14,6 +14,15 @@ export interface BunRuntimeRequestMessage {
 	request: BunRuntimeRequest;
 }
 
+export interface BunRuntimeHostResponseMessage {
+	version: typeof BUN_RUNTIME_PROTOCOL_VERSION;
+	type: "host_response";
+	id: string;
+	requestId: string;
+	result?: Record<string, unknown>;
+	error?: string;
+}
+
 export interface BunRuntimeResponseMessage {
 	version: typeof BUN_RUNTIME_PROTOCOL_VERSION;
 	type: "response";
@@ -36,12 +45,22 @@ export interface BunRuntimeStreamMessage {
 	chunk: string;
 }
 
-export type BunRuntimeHostMessage = BunRuntimeRequestMessage;
+export interface BunRuntimeHostRequestMessage {
+	version: typeof BUN_RUNTIME_PROTOCOL_VERSION;
+	type: "host_request";
+	id: string;
+	requestId: string;
+	method: string;
+	payload: Record<string, unknown>;
+}
+
+export type BunRuntimeHostMessage = BunRuntimeRequestMessage | BunRuntimeHostResponseMessage;
 export type BunRuntimeWorkerMessage =
 	| BunRuntimeReadyMessage
 	| BunRuntimeResponseMessage
 	| BunRuntimeErrorMessage
-	| BunRuntimeStreamMessage;
+	| BunRuntimeStreamMessage
+	| BunRuntimeHostRequestMessage;
 
 export type BunRuntimeRequest =
 	| { type: "ping" }
@@ -77,6 +96,8 @@ export interface BunRuntimeExecutionResult {
 	result?: string;
 	status: "ok" | "error" | "aborted";
 	error?: { ename: string; evalue: string; traceback: string[] };
+	diffs?: Array<{ path: string; oldStr: string; newStr: string; startLine?: number }>;
+	attachments?: Array<{ mimeType: string; data: string; path?: string }>;
 	durationMs: number;
 }
 
@@ -105,6 +126,21 @@ function isRequest(value: unknown): value is BunRuntimeRequest {
 		(value.maxOutputChars === undefined ||
 			(Number.isSafeInteger(value.maxOutputChars) && (value.maxOutputChars as number) > 0))
 	);
+}
+
+function parseHostResponse(value: Record<string, unknown>): BunRuntimeHostResponseMessage | null {
+	if (typeof value.id !== "string" || !value.id || typeof value.requestId !== "string" || !value.requestId)
+		return null;
+	const hasResult = isRecord(value.result);
+	const hasError = typeof value.error === "string" && Boolean(value.error);
+	if (hasResult === hasError) return null;
+	return {
+		version: BUN_RUNTIME_PROTOCOL_VERSION,
+		type: "host_response",
+		id: value.id,
+		requestId: value.requestId,
+		...(hasResult ? { result: value.result as Record<string, unknown> } : { error: value.error as string }),
+	};
 }
 
 function isResponse(value: unknown): value is BunRuntimeResponse {
@@ -153,6 +189,8 @@ function isExecutionResult(value: unknown): value is BunRuntimeExecutionResult {
 	if (value.result !== undefined && typeof value.result !== "string") return false;
 	if (value.status !== "ok" && value.status !== "error" && value.status !== "aborted") return false;
 	if (typeof value.durationMs !== "number" || !Number.isFinite(value.durationMs) || value.durationMs < 0) return false;
+	if (value.diffs !== undefined && !isDiffArray(value.diffs)) return false;
+	if (value.attachments !== undefined && !isAttachmentArray(value.attachments)) return false;
 	if (value.error === undefined) return true;
 	return (
 		isRecord(value.error) &&
@@ -162,10 +200,38 @@ function isExecutionResult(value: unknown): value is BunRuntimeExecutionResult {
 	);
 }
 
+function isDiffArray(value: unknown): value is BunRuntimeExecutionResult["diffs"] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(entry) =>
+				isRecord(entry) &&
+				typeof entry.path === "string" &&
+				typeof entry.oldStr === "string" &&
+				typeof entry.newStr === "string" &&
+				(entry.startLine === undefined ||
+					(Number.isSafeInteger(entry.startLine) && (entry.startLine as number) > 0)),
+		)
+	);
+}
+
+function isAttachmentArray(value: unknown): value is BunRuntimeExecutionResult["attachments"] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(entry) =>
+				isRecord(entry) &&
+				typeof entry.mimeType === "string" &&
+				typeof entry.data === "string" &&
+				(entry.path === undefined || typeof entry.path === "string"),
+		)
+	);
+}
+
 export function parseBunRuntimeHostMessage(value: unknown): BunRuntimeHostMessage | null {
-	if (!hasProtocolEnvelope(value) || value.type !== "request" || typeof value.id !== "string" || !value.id) {
-		return null;
-	}
+	if (!hasProtocolEnvelope(value)) return null;
+	if (value.type === "host_response") return parseHostResponse(value);
+	if (value.type !== "request" || typeof value.id !== "string" || !value.id) return null;
 	if (!isRequest(value.request)) return null;
 	return {
 		version: BUN_RUNTIME_PROTOCOL_VERSION,
@@ -182,6 +248,23 @@ export function parseBunRuntimeWorkerMessage(value: unknown): BunRuntimeWorkerMe
 		return { version: BUN_RUNTIME_PROTOCOL_VERSION, type: "ready", bunVersion: value.bunVersion };
 	}
 	if (typeof value.id !== "string" || !value.id) return null;
+	if (
+		value.type === "host_request" &&
+		typeof value.requestId === "string" &&
+		value.requestId &&
+		typeof value.method === "string" &&
+		value.method &&
+		isRecord(value.payload)
+	) {
+		return {
+			version: BUN_RUNTIME_PROTOCOL_VERSION,
+			type: "host_request",
+			id: value.id,
+			requestId: value.requestId,
+			method: value.method,
+			payload: value.payload,
+		};
+	}
 	if (
 		value.type === "stream" &&
 		(value.name === "stdout" || value.name === "stderr") &&

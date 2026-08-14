@@ -11,6 +11,7 @@ import {
 	type BunRuntimeResponse,
 	type BunRuntimeWorkerMessage,
 	decodeBunRuntimeWorkerLine,
+	encodeBunRuntimeMessage,
 } from "./protocol.js";
 
 const DEFAULT_START_TIMEOUT_MS = 10_000;
@@ -21,6 +22,7 @@ interface PendingRequest {
 	resolve: (response: BunRuntimeResponse) => void;
 	reject: (error: Error) => void;
 	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
+	onHostRequest?: (method: string, payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 export interface BunRuntimeProcessOptions {
@@ -132,13 +134,14 @@ export class BunRuntimeProcess {
 		request: BunRuntimeRequest,
 		signal?: AbortSignal,
 		onStream?: (chunk: string, name: "stdout" | "stderr") => void,
+		onHostRequest?: (method: string, payload: Record<string, unknown>) => Promise<Record<string, unknown>>,
 	): Promise<BunRuntimeResponse> {
 		await this.start(signal);
 		const child = this.child;
 		if (!child || !this.isRunning) throw new Error("Bun runtime is not running");
 		const id = uuid();
 		const response = new Promise<BunRuntimeResponse>((resolve, reject) => {
-			this.pending.set(id, { resolve, reject, onStream });
+			this.pending.set(id, { resolve, reject, onStream, onHostRequest });
 		});
 		const message = { version: BUN_RUNTIME_PROTOCOL_VERSION, type: "request" as const, id, request };
 		try {
@@ -196,9 +199,45 @@ export class BunRuntimeProcess {
 			pending.onStream?.(message.chunk, message.name);
 			return;
 		}
+		if (message.type === "host_request") {
+			void this.handleHostRequest(pending, message.id, message.requestId, message.method, message.payload);
+			return;
+		}
 		this.pending.delete(message.id);
 		if (message.type === "error") pending.reject(new Error(message.error));
 		else pending.resolve(message.response);
+	}
+
+	private async handleHostRequest(
+		pending: PendingRequest,
+		id: string,
+		requestId: string,
+		method: string,
+		payload: Record<string, unknown>,
+	): Promise<void> {
+		try {
+			if (!pending.onHostRequest) throw new Error(`No host handler is configured for ${method}`);
+			const result = await pending.onHostRequest(method, payload);
+			this.child?.stdin.write(
+				encodeBunRuntimeMessage({
+					version: BUN_RUNTIME_PROTOCOL_VERSION,
+					type: "host_response",
+					id,
+					requestId,
+					result,
+				}),
+			);
+		} catch (error) {
+			this.child?.stdin.write(
+				encodeBunRuntimeMessage({
+					version: BUN_RUNTIME_PROTOCOL_VERSION,
+					type: "host_response",
+					id,
+					requestId,
+					error: errorMessage(error),
+				}),
+			);
+		}
 	}
 
 	private readonly handleStderr = (chunk: Buffer): void => {

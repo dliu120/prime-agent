@@ -1,4 +1,5 @@
 import type {
+	ExecutionHostRequestHandlers,
 	ExecutionOptions,
 	ExecutionRestoreResult,
 	ExecutionResult,
@@ -10,6 +11,7 @@ import { BunRuntimeProcess, type BunRuntimeProcessOptions } from "./process.js";
 
 export interface BunExecutionRuntimeOptions extends BunRuntimeProcessOptions {
 	snapshot?: { path: string; manifestPath: string };
+	hostHandlers?: ExecutionHostRequestHandlers;
 }
 
 function abortedResult(started: number): ExecutionResult {
@@ -51,6 +53,11 @@ export class BunExecutionRuntime implements ExecutionRuntime {
 				{ type: "execute", code, maxOutputChars: options.maxOutputChars },
 				undefined,
 				options.onStream,
+				async (method, payload) => {
+					const handler = this.options.hostHandlers?.[method];
+					if (!handler) throw new Error(`Unknown Bun runtime host request: ${method}`);
+					return handler(payload);
+				},
 			);
 			if (response.type !== "execute_result") throw new Error("Bun runtime returned an invalid execution response");
 			return response.result;

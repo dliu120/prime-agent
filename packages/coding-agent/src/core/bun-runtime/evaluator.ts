@@ -1,7 +1,7 @@
 import { inspect } from "node:util";
 import vm from "node:vm";
 import { createJiti } from "jiti";
-import type { ExecutionError, ExecutionResult } from "../execution-runtime.js";
+import type { ExecutionAttachment, ExecutionDiff, ExecutionError, ExecutionResult } from "../execution-runtime.js";
 import { transformBunCell } from "./cell-transform.js";
 
 interface BunTranspiler {
@@ -20,6 +20,7 @@ export interface BunCellEvaluatorOptions {
 export interface BunCellExecutionOptions {
 	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
 	maxOutputChars?: number;
+	hostRequest?: (method: string, payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
 }
 
 function executionError(error: unknown): ExecutionError {
@@ -52,6 +53,9 @@ export class BunCellEvaluator {
 	private maxOutputChars = 65_536;
 	private stdout = "";
 	private stderr = "";
+	private diffs: ExecutionDiff[] = [];
+	private attachments: ExecutionAttachment[] = [];
+	private hostRequest?: (method: string, payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
 	constructor(options: BunCellEvaluatorOptions = {}) {
 		const jiti = createJiti(options.cwd ?? process.cwd());
@@ -78,6 +82,14 @@ export class BunCellEvaluator {
 				warn: (...values: unknown[]) => write("stderr", values),
 				error: (...values: unknown[]) => write("stderr", values),
 			},
+			prime: {
+				hostRequest: (method: string, payload: Record<string, unknown>) => {
+					if (!this.hostRequest) throw new Error("No Bun runtime host request handler is configured");
+					return this.hostRequest(method, payload);
+				},
+				displayDiff: (diff: ExecutionDiff) => this.diffs.push(diff),
+				attach: (attachment: ExecutionAttachment) => this.attachments.push(attachment),
+			},
 			Buffer,
 			setTimeout,
 			clearTimeout,
@@ -93,9 +105,12 @@ export class BunCellEvaluator {
 	async execute(code: string, options: BunCellExecutionOptions = {}): Promise<ExecutionResult> {
 		const started = Date.now();
 		this.onStream = options.onStream;
+		this.hostRequest = options.hostRequest;
 		this.maxOutputChars = options.maxOutputChars ?? 65_536;
 		this.stdout = "";
 		this.stderr = "";
+		this.diffs = [];
+		this.attachments = [];
 		try {
 			const transformed = transformBunCell(code);
 			const javascript = this.transpiler.transformSync(`(async () => {\n${transformed.code}\n})()`);
@@ -106,6 +121,8 @@ export class BunCellEvaluator {
 				stdout: this.stdout,
 				stderr: this.stderr,
 				result: value === undefined ? undefined : inspect(value, { colors: false, depth: 6 }),
+				diffs: this.diffs.length > 0 ? this.diffs : undefined,
+				attachments: this.attachments.length > 0 ? this.attachments : undefined,
 				status: "ok",
 				durationMs: Date.now() - started,
 			};
@@ -113,6 +130,8 @@ export class BunCellEvaluator {
 			return {
 				stdout: this.stdout,
 				stderr: this.stderr,
+				diffs: this.diffs.length > 0 ? this.diffs : undefined,
+				attachments: this.attachments.length > 0 ? this.attachments : undefined,
 				status: "error",
 				error: executionError(error),
 				durationMs: Date.now() - started,

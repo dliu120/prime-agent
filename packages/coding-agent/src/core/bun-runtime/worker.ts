@@ -1,3 +1,4 @@
+import { v4 as uuid } from "uuid";
 import { attachJsonlLineReader } from "../../modes/rpc/jsonl.js";
 import { BunCellEvaluator } from "./evaluator.js";
 import { restoreBunState, snapshotBunState } from "./persistence.js";
@@ -23,12 +24,26 @@ function fail(id: string, error: string): void {
 
 let executionQueue: Promise<void> = Promise.resolve();
 const evaluator = new BunCellEvaluator();
+const pendingHostRequests = new Map<
+	string,
+	{ resolve: (result: Record<string, unknown>) => void; reject: (error: Error) => void }
+>();
+
+function hostRequest(id: string, method: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+	const requestId = uuid();
+	const response = new Promise<Record<string, unknown>>((resolve, reject) => {
+		pendingHostRequests.set(requestId, { resolve, reject });
+	});
+	send({ version: BUN_RUNTIME_PROTOCOL_VERSION, type: "host_request", id, requestId, method, payload });
+	return response;
+}
 
 function execute(id: string, code: string, maxOutputChars?: number): void {
 	const execution = executionQueue.then(async () => {
 		const result = await evaluator.execute(code, {
 			maxOutputChars,
 			onStream: (chunk, name) => send({ version: BUN_RUNTIME_PROTOCOL_VERSION, type: "stream", id, chunk, name }),
+			hostRequest: (method, payload) => hostRequest(id, method, payload),
 		});
 		respond(id, { type: "execute_result", result });
 	});
@@ -58,6 +73,14 @@ function handleLine(line: string): void {
 	const message = decodeBunRuntimeHostLine(line);
 	if (!message) {
 		process.stderr.write("Invalid Bun runtime protocol message\n");
+		return;
+	}
+	if (message.type === "host_response") {
+		const pending = pendingHostRequests.get(message.requestId);
+		if (!pending) return;
+		pendingHostRequests.delete(message.requestId);
+		if (message.error) pending.reject(new Error(message.error));
+		else pending.resolve(message.result ?? {});
 		return;
 	}
 	try {

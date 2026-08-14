@@ -24,16 +24,20 @@ describe("Bun execution runtime contract", () => {
 	});
 
 	registerExecutionRuntimeContract({
-		createRuntime: ({ persistence = false } = {}) =>
+		createRuntime: ({ persistence = false, hostHandlers } = {}) =>
 			new BunExecutionRuntime({
 				workerPath,
 				snapshot: persistence ? { path: snapshotPath, manifestPath } : undefined,
+				hostHandlers,
 			}),
 		state: { assign: "const answer: number = 42", read: "answer", name: "answer" },
 		stream: 'console.log("out"); console.error("err")',
 		result: "40 + 2",
 		error: 'throw new Error("contract failure")',
 		longRunning: "while (true) { await new Promise((resolve) => setTimeout(resolve, 10)) }",
+		richOutput:
+			'prime.displayDiff({ path: "contract.txt", oldStr: "before", newStr: "after", startLine: 4 }); prime.attach({ mimeType: "image/png", data: "aW1hZ2U=", path: "contract.png" })',
+		hostRequest: '(await prime.hostRequest("contract.echo", { value: 42 })).echoed',
 		persist: {
 			assign: "const persistedAnswer = { value: 42 }",
 			read: "persistedAnswer.value",
