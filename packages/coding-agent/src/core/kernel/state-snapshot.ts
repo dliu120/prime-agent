@@ -6,6 +6,7 @@
 // with `dill` independently, so a single unpicklable object (open file, socket,
 // GPU tensor, …) is skipped and reported rather than aborting the whole snapshot.
 import { join } from "node:path";
+import type { ExecutionRestoreResult, ExecutionSnapshotResult } from "../execution-runtime.js";
 
 /** Default ceiling on a snapshot payload. Over-cap variables are skipped + reported. */
 export const DEFAULT_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
@@ -16,23 +17,8 @@ const KERNEL_STATE_BASENAME = "kernel-state";
 /** Marker the Python helpers print so the host can recover the JSON result line. */
 const RESULT_MARKER = "__PRIME_AGENT_KERNEL_STATE__";
 
-export interface SnapshotResult {
-	/** Top-level names successfully serialized into the payload. */
-	saved: string[];
-	/** Names that could not be serialized, with a short reason. */
-	skipped: { name: string; reason: string }[];
-	/** Payload size on disk, in bytes. */
-	bytes: number;
-	path: string;
-}
-
-export interface RestoreResult {
-	/** Names successfully revived into the kernel namespace. */
-	restored: string[];
-	/** Names present in the snapshot that failed to revive, with a short reason. */
-	failed: { name: string; reason: string }[];
-	path: string;
-}
+export type SnapshotResult = ExecutionSnapshotResult;
+export type RestoreResult = ExecutionRestoreResult;
 
 /** Absolute path to the dill payload within a session's artifact directory. */
 export function snapshotPathIn(artifactDir: string): string {

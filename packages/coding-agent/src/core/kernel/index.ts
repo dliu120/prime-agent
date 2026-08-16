@@ -8,6 +8,18 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { v4 as uuid } from "uuid";
 import { Dealer, Subscriber } from "zeromq";
+import type {
+	ExecutionAttachment,
+	ExecutionDiff,
+	ExecutionHostRequestHandler,
+	ExecutionHostRequestHandlers,
+	ExecutionOptions,
+	ExecutionResult,
+	ExecutionRuntime,
+	ExecutionRuntimeStartOptions,
+	ExecutionSentAgentMessage,
+} from "../execution-runtime.js";
+import { ExecutionRuntimeBusyError } from "../execution-runtime.js";
 import { ensureKernelPython, type KernelBootstrapProgressHandler, type KernelPythonSkill } from "./bootstrap.js";
 import { ForkServerUnavailable, forkKernel, isForkServerEnabled } from "./fork-server.js";
 import {
@@ -45,7 +57,7 @@ const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS = 256;
 const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE =
 	"IPython kernel is still running the previously interrupted cell. Wait and try again, or kill the IPython kernel to start fresh.";
 
-export class KernelBusyAfterInterruptError extends Error {
+export class KernelBusyAfterInterruptError extends ExecutionRuntimeBusyError {
 	constructor() {
 		super(KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE);
 		this.name = "KernelBusyAfterInterruptError";
@@ -62,7 +74,7 @@ export const HOST_COMM_TARGET = "host.request";
  * This legacy unary compatibility alias remains the dispatcher and registration
  * contract while context-aware handlers are staged separately below.
  */
-export type HostRequestHandler = (payload: Record<string, unknown>) => Promise<Record<string, unknown>>;
+export type HostRequestHandler = ExecutionHostRequestHandler;
 
 /**
  * Per-call authority supplied by the host-request dispatcher.
@@ -138,7 +150,7 @@ export function assertHostRequestHandler(value: unknown): asserts value is HostR
 }
 
 /** Host request handlers keyed by request type (e.g. "rlm.run", "goal.complete"). */
-export type HostRequestHandlers = Record<string, HostRequestHandler>;
+export type HostRequestHandlers = ExecutionHostRequestHandlers;
 
 /** Where and how to persist the kernel's user namespace so it survives resume. */
 export interface KernelSnapshotConfig {
@@ -166,21 +178,12 @@ export interface KernelManagerOptions {
 	username?: string;
 }
 
-export interface KernelStartOptions {
+export interface KernelStartOptions extends ExecutionRuntimeStartOptions {
+	/** @deprecated Use `onProgress`; retained for IPython callers during the runtime migration. */
 	onBootstrapProgress?: KernelBootstrapProgressHandler;
-	signal?: AbortSignal;
 }
 
-export interface ExecuteOptions {
-	/** Aborting interrupts the kernel via the control channel. */
-	signal?: AbortSignal;
-	onStream?: (chunk: string, name: "stdout" | "stderr") => void;
-	onLateSentAgentMessage?: (message: KernelSentAgentMessage) => void;
-	/** Cap stdout / stderr / result at this many characters. Default 65536. */
-	maxOutputChars?: number;
-	/** Synthetic host cell (snapshot/restore/list); excluded from lastCellCode attribution. */
-	internal?: boolean;
-}
+export type ExecuteOptions = ExecutionOptions;
 
 /** MIME tag the `edit` skill emits diff payloads under, via `display_data`. */
 export const DIFF_DISPLAY_MIME = "application/vnd.prime-agent.diff+json";
@@ -200,50 +203,14 @@ export const AGENT_MESSAGE_DISPLAY_MIME = "application/vnd.prime-agent.agent-mes
 const MAX_ATTACHMENT_DATA_CHARS = 10_000_000;
 
 /** One file edit, captured from a {@link DIFF_DISPLAY_MIME} display payload. */
-export interface KernelDiffDisplay {
-	path: string;
-	oldStr: string;
-	newStr: string;
-	/** 1-based line where `oldStr` begins in the file, for absolute line numbers. */
-	startLine?: number;
-}
+export type KernelDiffDisplay = ExecutionDiff;
 
 /** One media attachment, captured from an {@link ATTACHMENT_DISPLAY_MIME} display payload. */
-export interface KernelAttachment {
-	mimeType: string;
-	/** base64-encoded bytes. */
-	data: string;
-	/** Source path, surfaced to the TUI renderer. */
-	path?: string;
-}
+export type KernelAttachment = ExecutionAttachment;
 
-export interface KernelSentAgentMessage {
-	id: string;
-	message: string;
-	deliveryStatus: "delivered" | "queued";
-	receiverRole?: "parent" | "sibling" | "child";
-	target: {
-		activeSessionId: string;
-		sessionId: string;
-		sessionName?: string;
-	};
-}
+export type KernelSentAgentMessage = ExecutionSentAgentMessage;
 
-export interface ExecuteResult {
-	stdout: string;
-	stderr: string;
-	/** Last `execute_result` payload (text/plain), if the cell produced one. */
-	result?: string;
-	/** Diffs emitted via display_data, in order. */
-	diffs?: KernelDiffDisplay[];
-	/** Media attachments emitted via display_data, in order. */
-	attachments?: KernelAttachment[];
-	/** Agent messages sent from this cell, in order. */
-	sentAgentMessages?: KernelSentAgentMessage[];
-	status: "ok" | "error" | "aborted";
-	error?: { ename: string; evalue: string; traceback: string[] };
-	durationMs: number;
-}
+export type ExecuteResult = ExecutionResult;
 
 /** Parse a {@link DIFF_DISPLAY_MIME} payload, tolerating malformed input. */
 function parseDiffDisplay(payload: unknown): KernelDiffDisplay | undefined {
@@ -584,7 +551,7 @@ function installSignalHandlersOnce(): void {
 
 // ---- kernel manager ------------------------------------------------------
 
-export class KernelManager {
+export class KernelManager implements ExecutionRuntime {
 	private readonly options: Pick<
 		KernelManagerOptions,
 		"python" | "cwd" | "env" | "sessionId" | "hostHandlers" | "pythonSkills" | "snapshot"
@@ -648,7 +615,9 @@ export class KernelManager {
 			throw createKernelStartupAbortError();
 		}
 		if (!this.startPromise) {
-			this.startPromise = this.doStart({ onBootstrapProgress: options.onBootstrapProgress }).catch((error) => {
+			this.startPromise = this.doStart({
+				onBootstrapProgress: options.onProgress ?? options.onBootstrapProgress,
+			}).catch((error) => {
 				this.startPromise = undefined;
 				throw error;
 			});
@@ -1355,7 +1324,7 @@ export class KernelManager {
 		await channel.send(encode(msg, this.connection.key));
 	}
 
-	private async interrupt(): Promise<void> {
+	async interrupt(): Promise<void> {
 		if (!this.control || !this.connection) return;
 		const msg = buildMessage("interrupt_request", {}, this.session, this.options.username);
 		await this.control.send(encode(msg, this.connection.key));

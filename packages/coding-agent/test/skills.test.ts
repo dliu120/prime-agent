@@ -6,6 +6,7 @@ import type { ResourceDiagnostic } from "../src/core/diagnostics.js";
 import {
 	formatSkillsForPrompt,
 	getPythonSkillRuntimeInfo,
+	getTypeScriptSkillRuntimeInfo,
 	loadSkills,
 	loadSkillsFromDir,
 	type Skill,
@@ -307,6 +308,35 @@ describe("skills", () => {
 		});
 	});
 
+	it("loads TypeScript-backed skills from the same skill root", () => {
+		const root = mkdtempSync(join(tmpdir(), "prime-agent-typescript-skill-"));
+		const skillDir = join(root, "typed-skill");
+		mkdirSync(join(skillDir, "src"), { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			"---\nname: typed-skill\ndescription: Test TypeScript skill\n---\n\nUse it.\n",
+		);
+		writeFileSync(join(skillDir, "package.json"), '{"name":"typed-skill","type":"module"}\n');
+		writeFileSync(join(skillDir, "src", "index.ts"), "export const answer: number = 42;\n");
+		try {
+			const { skills, diagnostics } = loadSkillsFromDir({ dir: skillDir, source: "test" });
+			expect(diagnostics).toEqual([]);
+			expect(skills).toMatchObject([{ name: "typed-skill", kind: "typescript" }]);
+			expect(getTypeScriptSkillRuntimeInfo(skills)).toEqual([
+				{
+					name: "typed-skill",
+					importName: "typed_skill",
+					packagePath: skillDir,
+					entryPath: join(skillDir, "src", "index.ts"),
+					packageJsonPath: join(skillDir, "package.json"),
+				},
+			]);
+			expect(formatSkillsForPrompt(skills)).toContain("<typescript_import>typed_skill</typescript_import>");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	describe("formatSkillsForPrompt", () => {
 		it("should return empty string for no skills", () => {
 			const result = formatSkillsForPrompt([]);
@@ -370,8 +400,9 @@ describe("skills", () => {
 			const introText = result.substring(0, xmlStart);
 
 			expect(introText).toContain("The following skills provide specialized instructions");
-			expect(introText).toContain("Use ipython to inspect a skill's file");
+			expect(introText).toContain("Use an active notebook or shell tool to inspect a skill's file");
 			expect(introText).toContain("Skills with a python_import are prepared");
+			expect(introText).toContain("Skills with a typescript_import are prepared");
 		});
 
 		it("should escape XML special characters", () => {

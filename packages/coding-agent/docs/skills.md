@@ -12,6 +12,7 @@ Prime Agent implements the [Agent Skills standard](https://agentskills.io/specif
 - [Built-in Skills](#built-in-skills)
 - [How Skills Work](#how-skills-work)
 - [Python-Backed Skills](#python-backed-skills)
+- [TypeScript-Backed Skills](#typescript-backed-skills)
 - [Creating Skills with Prime Agent](#creating-skills-with-prime-agent)
 - [Skill Commands](#skill-commands)
 - [Skill Structure](#skill-structure)
@@ -197,6 +198,22 @@ The model can then call the skill from normal Python or from shell mode:
 await web_search("prime agent")
 !web_search "prime agent" --limit 3
 ```
+
+## TypeScript-Backed Skills
+
+When the opt-in `bun` tool is active, a skill can expose reusable TypeScript alongside `SKILL.md`:
+
+```text
+my-skill/
+├── SKILL.md
+├── package.json
+└── src/
+    └── index.ts
+```
+
+The entry module is loaded into the persistent Bun namespace. Hyphens in the skill name become underscores, so `my-skill` is available as `my_skill`. Python-backed skills remain installed and loaded only through IPython; neither package type replaces the other.
+
+Dependencies must already be resolvable from the skill directory or workspace. Prime Agent does not install npm packages during Bun runtime startup.
 
 ## Creating Skills with Prime Agent
 
