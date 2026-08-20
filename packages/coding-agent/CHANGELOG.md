@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Fixed headless completion reporting a clean finish when a post-compaction continuation failed to start: ACP and print-mode idle waiters now see the failure, while interactive idle behavior is unchanged.
 - Fixed the source runner failing to resolve workspace packages when invoked outside the repository.
 - Added an opt-in `bun` tool for persistent TypeScript cells, typed host requests, rich output, interruption, and bounded best-effort V8 state persistence while retaining IPython as the default.
 - Added a pre-imported generic MCP API and shell/TUI commands to manage persistent Streamable HTTP and stdio servers in user settings.
