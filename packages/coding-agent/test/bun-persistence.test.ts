@@ -36,6 +36,43 @@ describe("Bun runtime persistence", () => {
 		await expect(restored.execute("data.answer")).resolves.toMatchObject({ status: "ok", result: "42" });
 	});
 
+	it("bounds snapshots and prunes only oversized bindings after a successful write", async () => {
+		const evaluator = new BunCellEvaluator();
+		await evaluator.execute(
+			'const aSmallOne = "a".repeat(400); const bSmallTwo = "b".repeat(400); const cAggregateOnly = "c".repeat(400); const zLarge = "x".repeat(4096)',
+		);
+		const paths = snapshotPaths();
+
+		const snapshot = await snapshotBunState(evaluator, paths.path, paths.manifestPath, {
+			maxBytes: 1024,
+			maxVariableBytes: 512,
+			pruneOversized: true,
+		});
+
+		expect(snapshot.saved).toEqual(["aSmallOne", "bSmallTwo"]);
+		expect(snapshot.skipped).toEqual([
+			expect.objectContaining({ name: "cAggregateOnly", reason: expect.stringContaining("aggregate") }),
+			expect.objectContaining({ name: "zLarge", reason: expect.stringContaining("per-variable") }),
+		]);
+		expect(snapshot.pruned).toEqual(["zLarge"]);
+		expect(evaluator.listNamespaceNames()).toEqual(["aSmallOne", "bSmallTwo", "cAggregateOnly"]);
+	});
+
+	it("keeps oversized bindings when the bounded snapshot cannot be written", async () => {
+		const evaluator = new BunCellEvaluator();
+		await evaluator.execute('const large = "x".repeat(4096)');
+		const paths = snapshotPaths();
+		writeFileSync(paths.path, "blocks directory creation");
+
+		await expect(
+			snapshotBunState(evaluator, join(paths.path, "state.v8"), paths.manifestPath, {
+				maxVariableBytes: 512,
+				pruneOversized: true,
+			}),
+		).rejects.toThrow();
+		expect(evaluator.listNamespaceNames()).toContain("large");
+	});
+
 	it("rejects a payload that does not match the manifest", async () => {
 		const evaluator = new BunCellEvaluator();
 		await evaluator.execute("const answer = 42");

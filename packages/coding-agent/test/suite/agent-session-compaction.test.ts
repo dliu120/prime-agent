@@ -94,9 +94,56 @@ describe("AgentSession compaction characterization", () => {
 		await harness.session.prompt("one");
 		await harness.session.prompt("two");
 
-		const result = await harness.session.compact();
+		const pruneOversizedVariables = vi.fn(async () => ["large_text"]);
+		const listNamespaceNames = vi.fn(async () => ["small_value"]);
+		const pruneOversizedBunVariables = vi.fn(async () => ["large_object"]);
+		const listBunNamespaceNames = vi.fn(async () => ["small_object"]);
+		const internals = harness.session as unknown as {
+			_ipythonKernelProvisioner?: unknown;
+			_bunRuntimeProvisioner?: unknown;
+		};
+		const previousIpythonProvisioner = internals._ipythonKernelProvisioner;
+		const previousBunProvisioner = internals._bunRuntimeProvisioner;
+		internals._ipythonKernelProvisioner = {
+			hasRunningKernel: true,
+			pruneOversizedVariables,
+			listNamespaceNames,
+		};
+		internals._bunRuntimeProvisioner = {
+			hasRunningRuntime: true,
+			pruneOversizedVariables: pruneOversizedBunVariables,
+			listNamespaceNames: listBunNamespaceNames,
+		};
+		let result!: Awaited<ReturnType<typeof harness.session.compact>>;
+		try {
+			result = await harness.session.compact();
+		} finally {
+			internals._ipythonKernelProvisioner = previousIpythonProvisioner;
+			internals._bunRuntimeProvisioner = previousBunProvisioner;
+		}
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
 
+		expect(pruneOversizedVariables).toHaveBeenCalledOnce();
+		expect(listNamespaceNames).toHaveBeenCalledOnce();
+		expect(pruneOversizedVariables.mock.invocationCallOrder[0] as number).toBeLessThan(
+			listNamespaceNames.mock.invocationCallOrder[0] as number,
+		);
+		expect(harness.session.messages).toContainEqual(
+			expect.objectContaining({
+				role: "custom",
+				customType: "ipython_state",
+				content: expect.stringContaining("were removed: large_text"),
+			}),
+		);
+		expect(pruneOversizedBunVariables).toHaveBeenCalledOnce();
+		expect(listBunNamespaceNames).toHaveBeenCalledOnce();
+		expect(harness.session.messages).toContainEqual(
+			expect.objectContaining({
+				role: "custom",
+				customType: "bun_state",
+				content: expect.stringContaining("were removed: large_object"),
+			}),
+		);
 		expect(result.summary).toBe("summary from extension");
 		expect(compactionEntries).toHaveLength(1);
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");

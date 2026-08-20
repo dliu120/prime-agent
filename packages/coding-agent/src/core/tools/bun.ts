@@ -22,6 +22,8 @@ export type BunToolDetails = ExecutionResult;
 export interface BunToolOptions {
 	hostHandlers?: ExecutionHostRequestHandlers;
 	snapshotDir?: string;
+	snapshotMaxBytes?: number;
+	snapshotMaxVariableBytes?: number;
 	readyGate?: Promise<unknown>;
 	typescriptSkills?: readonly TypeScriptSkillRuntimeInfo[];
 	provisioner?: BunRuntimeProvisioner;
@@ -45,7 +47,13 @@ export class BunRuntimeProvisioner {
 		const runtimeOptions: BunExecutionRuntimeOptions = {
 			cwd: this.cwd,
 			hostHandlers: this.options.hostHandlers,
-			snapshot: this.options.snapshotDir ? snapshotPaths(this.options.snapshotDir) : undefined,
+			snapshot: this.options.snapshotDir
+				? {
+						...snapshotPaths(this.options.snapshotDir),
+						maxBytes: this.options.snapshotMaxBytes,
+						maxVariableBytes: this.options.snapshotMaxVariableBytes,
+					}
+				: undefined,
 		};
 		return new BunExecutionRuntime(runtimeOptions);
 	}
@@ -73,6 +81,19 @@ export class BunRuntimeProvisioner {
 			}
 		}
 		return runtime;
+	}
+
+	get hasRunningRuntime(): boolean {
+		return this.runtime?.isRunning ?? false;
+	}
+
+	async pruneOversizedVariables(signal?: AbortSignal): Promise<string[] | null> {
+		const result = await this.runtime?.pruneOversizedVariables(signal);
+		return result ? (result.pruned ?? []) : null;
+	}
+
+	async listNamespaceNames(signal?: AbortSignal): Promise<string[] | null> {
+		return (await this.runtime?.listNamespaceNames(signal)) ?? null;
 	}
 
 	async execute(

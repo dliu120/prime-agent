@@ -10,7 +10,7 @@ import type {
 import { BunRuntimeProcess, type BunRuntimeProcessOptions } from "./process.js";
 
 export interface BunExecutionRuntimeOptions extends BunRuntimeProcessOptions {
-	snapshot?: { path: string; manifestPath: string };
+	snapshot?: { path: string; manifestPath: string; maxBytes?: number; maxVariableBytes?: number };
 	hostHandlers?: ExecutionHostRequestHandlers;
 }
 
@@ -94,9 +94,23 @@ export class BunExecutionRuntime implements ExecutionRuntime {
 		return response.names;
 	}
 
-	async snapshotState(): Promise<ExecutionSnapshotResult | null> {
+	async snapshotState(signal?: AbortSignal): Promise<ExecutionSnapshotResult | null> {
+		return this.captureSnapshot(false, signal);
+	}
+
+	async pruneOversizedVariables(signal?: AbortSignal): Promise<ExecutionSnapshotResult | null> {
+		return this.captureSnapshot(true, signal);
+	}
+
+	private async captureSnapshot(
+		pruneOversized: boolean,
+		signal?: AbortSignal,
+	): Promise<ExecutionSnapshotResult | null> {
 		if (!this.options.snapshot) return null;
-		const response = await this.process.request({ type: "snapshot", ...this.options.snapshot });
+		const response = await this.process.request(
+			{ type: "snapshot", ...this.options.snapshot, pruneOversized },
+			signal,
+		);
 		if (response.type !== "snapshot_result") throw new Error("Bun runtime returned an invalid snapshot response");
 		return response.result;
 	}

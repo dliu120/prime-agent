@@ -60,32 +60,29 @@ Keep this fork's Python/IPython implementation unchanged wherever possible. Afte
 
 ### Last upstream review
 
-Reviewed on 2026-08-16 after fetching `upstream/main`.
+Reviewed on 2026-08-20 after fetching `upstream/main`.
 
-- Fork sync point: `9f9501146e869466acaca66dac49cff857b7b4f9`
-- Reviewed upstream head: `06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2`
-- Commit range: `9f9501146e869466acaca66dac49cff857b7b4f9..06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2`
-- Integrated commits:
-  - `97b994c3d7c45ca1ae635190e91e9e58ddf2577c` — supervisor-owned RLM spawn ledger
-  - `06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2` — consolidated subagent metadata and display files
-- Integration result: merged the upstream head without conflicts. No execution-runtime port was required because topology, admission, rename, deletion, and passive-subagent hydration remain authoritative in the shared TypeScript daemon host.
+- Fork head: `7377207462728c5145f5eef4a3527e702f428868`
+- Prior reviewed upstream head: `06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2`
+- Reviewed upstream head: `f8f02221eecad192c65324ebba50037505cfdac6`
+- Commit range: `06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2..f8f02221eecad192c65324ebba50037505cfdac6` (28 commits)
+- Integration result: merged the current upstream head into the Bun fork, retained the fork's runtime files and parser dependency, advanced the workspace to Prime Agent 0.7.4 and TypeScript 7.0.2, and fixed the source launcher to resolve workspace paths from any caller directory.
 
 | Classification | Upstream changes | Disposition |
 | --- | --- | --- |
-| Already runtime-neutral | RLM spawn, rename, deletion, sibling lookup, passive hydration, and display metadata | Integrated unchanged. Both IPython and Bun reach these operations through the same `AgentSession` host handlers. |
-| Python-specific | None | No IPython-only change to retain or document. |
-| Must also be implemented in Bun | None | No Bun port or new parity case required. |
+| Already runtime-neutral | Daemon and ACP lifecycle hardening, session-input admission, RLM model/effort selection, compaction continuation, model search, prompt updates, and shared host handlers | Integrated in the shared TypeScript host. Both notebook runtimes receive these behaviors without adapter changes. |
+| Python-specific | Generic MCP client API and dependencies, graceful Jupyter shutdown, and bounded dill snapshots | Integrated in the IPython path. Generic MCP remains a pre-imported Python API and is not advertised when only Bun is active. |
+| Must also be implemented in Bun | Per-binding and aggregate persistence limits, plus removal of oversized live state after compaction | Added bounded V8 snapshots, protocol fields for snapshot limits and pruning, shared execution-runtime pruning, and Bun compaction-state notices. |
 
-The newly mirrored behavior is RLM family authority and passive-subagent metadata supplied by the shared daemon. There is no runtime-specific parity gap for this change: notebook code sends the existing typed host requests, while the host owns the resulting ledger state. The execution contract continues to cover lazy startup, sequential state, streaming, results, rich output, typed host requests, error recovery, interruption/restart, namespace inspection, and snapshot/restore.
+Intentional differences remain unchanged: Python-backed skills and generic MCP connections belong to IPython; TypeScript-backed skills belong to Bun. Unsupported live Bun values are skipped and recreated after restore. The Bun worker remains a process boundary rather than a security sandbox.
 
-Intentional differences remain unchanged: Python-backed skills belong to IPython, TypeScript-backed skills belong to Bun, and unsupported live values are recreated rather than restored. Fresh IPython contract execution still requires a locally available kernel environment; when unavailable, that suite skips rather than substituting Bun evidence for Python evidence.
+Verification for this review covered the repository gate, the complete Bun-focused suite, the shared compaction suite, the manually resolved daemon suites, real IPython execution/persistence/shutdown, and the Python MCP runtime suite. The managed Python environment required the configured PyPI mirror because direct `files.pythonhosted.org` access was unavailable.
 
-Verification for this review passed the upstream ledger/display suites and the complete Bun-focused suite. The IPython contract file was invoked but skipped because this checkout had no usable kernel environment; that remains a local verification gap, not evidence of an IPython regression.
-
-Run focused Bun tests from `packages/coding-agent`, then run the repository gate:
+Run focused runtime tests from `packages/coding-agent`, then run the repository gate:
 
 ```bash
 bun ../../node_modules/vitest/dist/cli.js --run test/bun-cell-transform.test.ts test/bun-cell-evaluator.test.ts test/bun-persistence.test.ts
 npx tsx ../../node_modules/vitest/dist/cli.js --run test/bun-runtime-protocol.test.ts test/bun-runtime-process.test.ts test/bun-execution-runtime-contract.test.ts test/bun-tool.test.ts
+npx tsx ../../node_modules/vitest/dist/cli.js --run test/suite/agent-session-compaction.test.ts
 npm run check
 ```
