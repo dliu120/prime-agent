@@ -19,8 +19,9 @@ import type {
 	ExecutionSentAgentMessage,
 } from "../execution-runtime.js";
 import { ExecutionRuntimeBusyError } from "../execution-runtime.js";
+import { recordOrphanProcessState } from "../orphan-process-journal.js";
 import { ensureKernelPython, type KernelBootstrapProgressHandler, type KernelPythonSkill } from "./bootstrap.js";
-import { ForkServerUnavailable, forkKernel, isForkServerEnabled } from "./fork-server.js";
+import { type ForkedKernelHandle, ForkServerUnavailable, forkKernel, isForkServerEnabled } from "./fork-server.js";
 import {
 	buildListNamesCode,
 	buildRestoreCode,
@@ -36,8 +37,12 @@ import {
 
 const DELIM = Buffer.from("<IDS|MSG>");
 const PROTOCOL_VERSION = "5.3";
-const PORTS_RESOLVE_TIMEOUT_MS = 5000;
-const READY_TIMEOUT_MS = 5000;
+// Generous backstop for a kernel that is alive but wedged: crashes are detected
+// within one 25ms poll via the exit handler, warm boots return in under a second,
+// and a cold first boot after a venv (re)provision may legitimately need tens of
+// seconds of imports before it binds ports and answers the ready probe.
+const PORTS_RESOLVE_TIMEOUT_MS = 30_000;
+const READY_TIMEOUT_MS = 30_000;
 // Loopback PUB/SUB subscription propagation is usually sub-ms, but keep a small guard before first execute.
 const IOPUB_SUBSCRIBE_DELAY_MS = 50;
 const DEFAULT_MAX_OUTPUT_CHARS = 65536;
@@ -557,11 +562,12 @@ export class KernelManager implements ExecutionRuntime {
 	private readonly commTargets = new Map<string, string>();
 	private readonly handledHostRequestCommIds = new Set<string>();
 	private kernel?: ChildProcess;
-	// Set instead of `kernel` when the kernel was forked from the forkserver: it is
-	// not a direct child, so it has no ChildProcess handle and is killed by pid.
-	private kernelPid?: number;
-	/** Polls a forked kernel's pid for death (no "exit" event on a non-child). */
+	// Set instead of `kernel` for forkserver-forked kernels (not our child):
+	// signaling/liveness go through the forkserver, never process.kill.
+	private forkedKernel?: ForkedKernelHandle;
+	/** Polls a forked kernel for death (no "exit" event on a non-child). */
 	private forkedLivenessTimer?: ReturnType<typeof globalThis.setInterval>;
+	private forkedLivenessProbeInFlight = false;
 	private shell?: Dealer;
 	private iopub?: Subscriber;
 	private control?: Dealer;
@@ -582,6 +588,8 @@ export class KernelManager implements ExecutionRuntime {
 	private lastCellCode?: string;
 	private readonly inFlightHostRequests = new Set<Promise<void>>();
 	private state: "idle" | "starting" | "running" | "shutdown" = "idle";
+	/** Bumped by every teardown so a stale in-flight doStart can never touch a newer kernel. */
+	private startGeneration = 0;
 	/** Memoized so concurrent callers all await the same in-flight startup. */
 	private startPromise?: Promise<void>;
 	/** Pending debounced auto-snapshot, if one has been scheduled. */
@@ -613,18 +621,21 @@ export class KernelManager implements ExecutionRuntime {
 			throw createKernelStartupAbortError();
 		}
 		if (!this.startPromise) {
-			this.startPromise = this.doStart({
+			const startPromise = this.doStart({
 				onBootstrapProgress: options.onProgress ?? options.onBootstrapProgress,
 			}).catch((error) => {
-				this.startPromise = undefined;
+				// Only clear our own memoization: a stale start must not evict a newer one.
+				if (this.startPromise === startPromise) this.startPromise = undefined;
 				throw error;
 			});
+			this.startPromise = startPromise;
 		}
 		return raceStartupWithAbort(this.startPromise, options.signal);
 	}
 
 	private async doStart(startOptions: KernelStartOptions): Promise<void> {
 		if (this.state !== "idle") return;
+		const generation = ++this.startGeneration;
 		this.state = "starting";
 		installSignalHandlersOnce();
 		// Tracked from the moment startup begins so session cleanup and signal
@@ -639,8 +650,10 @@ export class KernelManager implements ExecutionRuntime {
 					pythonSkills: this.options.pythonSkills,
 					onProgress: startOptions.onBootstrapProgress,
 				}));
+			if (this.startStale(generation)) throw new Error("Kernel start superseded");
 			this.options.python = python;
 		} catch (error) {
+			if (this.startStale(generation)) throw error; // never touch a newer start's state
 			liveKernels.delete(this);
 			if ((this.state as string) !== "shutdown") this.state = "idle";
 			throw error;
@@ -659,19 +672,26 @@ export class KernelManager implements ExecutionRuntime {
 		let forked = false;
 		if (isForkServerEnabled()) {
 			try {
-				this.kernelPid = await forkKernel(python, {
+				const handle = await forkKernel(python, {
 					connectionPath: connection.path,
 					cwd: this.options.cwd,
-					// Match the direct-spawn env exactly: merge the current host env with
-					// the per-kernel overrides, applied fresh in the child (the template's
-					// inherited env snapshot may be stale by fork time).
-					env: this.options.env ? { ...process.env, ...this.options.env } : { ...process.env },
+					// Applied fresh in the child (the template's env snapshot may be stale).
+					// No JPY_PARENT_PID: forked children watch the forkserver by getppid().
+					env: { ...process.env, ...this.options.env },
 				});
+				if (this.startStale(generation)) {
+					// Nobody owns this kernel; the protocol kill is id-keyed and safe.
+					void handle.kill("TERM").catch(() => {});
+					throw new Error("Kernel start superseded");
+				}
+				this.forkedKernel = handle;
+				recordOrphanProcessState(handle.pid, true);
 				forked = true;
 			} catch (err) {
+				if (this.startStale(generation)) throw err; // never touch a newer start's state
 				if (!(err instanceof ForkServerUnavailable)) throw err;
 				this.appendKernelDiagnostic(`forkserver unavailable, spawning directly: ${err.message}`);
-				this.kernelPid = undefined;
+				this.forkedKernel = undefined;
 				// A fork request that times out or loses its pid reply may still have
 				// forked a child that binds the ports in this connection file. Mint a
 				// fresh connection for the direct spawn so a possible orphan can never
@@ -690,10 +710,12 @@ export class KernelManager implements ExecutionRuntime {
 		if (!forked) {
 			const kernel = spawn(python, ["-m", "ipykernel_launcher", "-f", connection.path], {
 				cwd: this.options.cwd,
-				env: this.options.env ? { ...process.env, ...this.options.env } : process.env,
+				// ipykernel's parent poller exits the kernel if this pid dies (covers SIGKILL of the owner).
+				env: { ...process.env, ...this.options.env, JPY_PARENT_PID: String(process.pid) },
 				stdio: ["ignore", "pipe", "pipe"],
 			});
 			this.kernel = kernel;
+			if (kernel.pid !== undefined) recordOrphanProcessState(kernel.pid, true);
 
 			kernel.stderr?.on("data", (buf: Buffer) => {
 				const s = buf.toString();
@@ -723,11 +745,14 @@ export class KernelManager implements ExecutionRuntime {
 		let conn: ConnectionInfo;
 		try {
 			conn = await this.waitForResolvedConnection(connectionPath);
+			if (this.startStale(generation)) throw new Error("Kernel start superseded");
 			this.connection = conn;
 		} catch (e) {
+			if (this.startStale(generation)) throw e; // never tear down a newer start's kernel
 			const canRetryStartup = (this.state as string) !== "shutdown";
-			await this.shutdown();
-			if (canRetryStartup) this.state = "idle";
+			// Only the call that performed the cleanup may resurrect to idle; a
+			// concurrent kill()/teardown owns the state otherwise.
+			if ((await this.shutdown()) && canRetryStartup) this.state = "idle";
 			throw e;
 		}
 
@@ -742,14 +767,18 @@ export class KernelManager implements ExecutionRuntime {
 
 		// ZMQ PUB/SUB slow-joiner: give the subscription a brief chance to reach the kernel before first execute.
 		await sleep(IOPUB_SUBSCRIBE_DELAY_MS);
+		if (this.startStale(generation)) throw new Error("Kernel start superseded");
 		this.startIopubPump();
 
 		try {
 			await this.probeReady();
+			if (this.startStale(generation)) throw new Error("Kernel start superseded");
 		} catch (e) {
+			if (this.startStale(generation)) throw e; // never tear down a newer start's kernel
 			const canRetryStartup = (this.state as string) !== "shutdown";
-			await this.shutdown();
-			if (canRetryStartup) this.state = "idle";
+			// Only the call that performed the cleanup may resurrect to idle; a
+			// concurrent kill()/teardown owns the state otherwise.
+			if ((await this.shutdown()) && canRetryStartup) this.state = "idle";
 			throw e;
 		}
 
@@ -757,40 +786,64 @@ export class KernelManager implements ExecutionRuntime {
 		this.startForkedLivenessMonitor();
 	}
 
-	// A forked kernel isn't a direct child, so no "exit" fires when it dies. Poll its
-	// pid so a mid-run death tears down like the direct-spawn exit handler: mark
-	// shutdown, drop from liveKernels, and reject any in-flight execution.
+	/** True when a teardown (or newer start) superseded the start that captured `generation`. */
+	private startStale(generation: number): boolean {
+		return generation !== this.startGeneration;
+	}
+
+	// No "exit" event fires for a non-child; poll the forkserver so a mid-run
+	// death tears down like the direct-spawn exit handler.
 	private startForkedLivenessMonitor(): void {
-		if (this.kernelPid === undefined) return;
+		if (!this.forkedKernel) return;
 		this.forkedLivenessTimer = globalThis.setInterval(() => {
-			if (this.state !== "running") return;
-			if (!this.forkedKernelDied()) return;
-			this.appendKernelDiagnostic("forked kernel exited unexpectedly");
-			this.state = "shutdown";
-			liveKernels.delete(this);
-			this.cleanupResources();
+			void this.checkForkedKernelDeath();
 		}, FORKED_LIVENESS_POLL_MS);
 		this.forkedLivenessTimer.unref?.();
 	}
 
-	// A forked kernel is not a direct child, so it emits no "exit" event; poll its
-	// pid so a dead child fails fast instead of burning the full resolve timeout.
-	private forkedKernelDied(): boolean {
-		if (this.kernelPid === undefined) return false;
+	private async checkForkedKernelDeath(): Promise<void> {
+		if (this.state !== "running" || this.forkedLivenessProbeInFlight) return;
+		const probed = this.forkedKernel;
+		this.forkedLivenessProbeInFlight = true;
 		try {
-			process.kill(this.kernelPid, 0);
-			return false;
+			if (!(await this.forkedKernelDead(probed))) return;
+		} finally {
+			this.forkedLivenessProbeInFlight = false;
+		}
+		// Re-check after the await: teardown or a restart may have raced this poll.
+		if (this.state !== "running" || this.forkedKernel !== probed) return;
+		this.appendKernelDiagnostic("forked kernel exited unexpectedly");
+		this.state = "shutdown";
+		liveKernels.delete(this);
+		this.cleanupResources();
+	}
+
+	// Liveness from the forkserver's reap table; a pid-0 probe would race reuse.
+	// `timeoutMs` bounds the probe (timeout counts as alive so the caller's own
+	// deadline decides); without it the protocol request timeout applies.
+	private async forkedKernelDead(probed: ForkedKernelHandle | undefined, timeoutMs?: number): Promise<boolean> {
+		if (!probed) return false;
+		try {
+			const alive = probed.isAlive();
+			if (timeoutMs === undefined) return !(await alive);
+			alive.catch(() => {}); // absorb a rejection that lands after the race is lost
+			return !(await Promise.race([alive, sleep(timeoutMs, true, { ref: false })]));
 		} catch (error) {
-			// EPERM means the pid exists but isn't signalable by us — still alive.
-			// Only ESRCH (no such process) is genuine death.
-			return !(error instanceof Error && (error as NodeJS.ErrnoException).code === "EPERM");
+			// A timeout is unknown liveness, not proven death (the forkserver may just be stalled in a slow fork).
+			if (error instanceof ForkServerUnavailable && error.timedOut) return false;
+			// Forkserver gone: its kernels' parent_handle watchdogs exit them too.
+			return true;
 		}
 	}
 
 	private async waitForResolvedConnection(connectionPath: string): Promise<ConnectionInfo> {
 		const startedAt = Date.now();
 		while (Date.now() - startedAt < PORTS_RESOLVE_TIMEOUT_MS) {
-			if ((this.state as string) === "shutdown" || this.forkedKernelDied()) {
+			const remainingBudget = PORTS_RESOLVE_TIMEOUT_MS - (Date.now() - startedAt);
+			if (
+				(this.state as string) === "shutdown" ||
+				(await this.forkedKernelDead(this.forkedKernel, remainingBudget))
+			) {
 				const tail = this.kernelStderr.slice(-1024);
 				throw new Error(`Kernel exited before resolving ports. stderr:\n${tail || "(empty)"}`);
 			}
@@ -815,18 +868,22 @@ export class KernelManager implements ExecutionRuntime {
 
 		const msg = buildMessage("kernel_info_request", {}, this.session, this.options.username);
 		const requestMsgId = msg.header.msg_id;
-		await shell.send(encode(msg, conn.key));
+		await this.translateSocketClosure(shell.send(encode(msg, conn.key)));
 
 		const startedAt = Date.now();
 		while (Date.now() - startedAt < READY_TIMEOUT_MS) {
-			if ((this.state as string) === "shutdown" || this.forkedKernelDied()) {
+			const remainingBudget = READY_TIMEOUT_MS - (Date.now() - startedAt);
+			if (
+				(this.state as string) === "shutdown" ||
+				(await this.forkedKernelDead(this.forkedKernel, remainingBudget))
+			) {
 				const tail = this.kernelStderr.slice(-1024);
 				throw new Error(`Kernel exited during startup. stderr:\n${tail || "(empty)"}`);
 			}
 
 			const remaining = READY_TIMEOUT_MS - (Date.now() - startedAt);
 			const winner = await Promise.race([
-				shell.receive().then((frames) => ({ kind: "frames" as const, frames })),
+				this.translateSocketClosure(shell.receive()).then((frames) => ({ kind: "frames" as const, frames })),
 				sleep(remaining).then(() => ({ kind: "timeout" as const })),
 			]);
 			if (winner.kind === "timeout") break;
@@ -843,6 +900,26 @@ export class KernelManager implements ExecutionRuntime {
 		throw new Error(
 			`Kernel did not respond to kernel_info_request within ${READY_TIMEOUT_MS}ms. stderr tail:\n${tail || "(empty)"}`,
 		);
+	}
+
+	/**
+	 * A zmq operation interrupted by socket teardown rejects with the raw libzmq
+	 * EAGAIN text ("Operation was not possible or timed out"); surface the kernel
+	 * lifecycle instead so callers see an actionable, retriable failure.
+	 */
+	private async translateSocketClosure<T>(operation: Promise<T>): Promise<T> {
+		try {
+			return await operation;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (message.includes("not possible or timed out") || message.includes("Socket is closed")) {
+				const tail = this.kernelStderr.slice(-1024);
+				throw new Error(
+					`IPython kernel channel closed while ${this.state === "starting" ? "starting up" : "communicating"} (retriable). stderr tail:\n${tail || "(empty)"}`,
+				);
+			}
+			throw error;
+		}
 	}
 
 	async execute(code: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
@@ -980,7 +1057,7 @@ export class KernelManager implements ExecutionRuntime {
 				this.lastCellCode = code;
 			}
 			try {
-				const sendPromise = shell.send(encode(msg, conn.key));
+				const sendPromise = this.translateSocketClosure(shell.send(encode(msg, conn.key)));
 				sendPromise.catch(() => undefined);
 				await Promise.race([sendPromise, result.promise.then(() => undefined)]);
 				if (this.activeExecution === execution && execution.status !== "aborted") {
@@ -1407,6 +1484,7 @@ export class KernelManager implements ExecutionRuntime {
 	}
 
 	private cleanupResources(killSignal: NodeJS.Signals = "SIGTERM"): void {
+		this.startGeneration++; // any teardown invalidates in-flight starts
 		this.clearSnapshotTimer();
 		this.lateSentAgentMessageHandlers.clear();
 		if (this.forkedLivenessTimer) {
@@ -1423,19 +1501,32 @@ export class KernelManager implements ExecutionRuntime {
 		this.control = undefined;
 		this.iopubPumpPromise = undefined;
 		this.controlPumpPromise = undefined;
-		try {
-			if (this.kernel) {
-				this.kernel.kill(killSignal);
-			} else if (this.kernelPid !== undefined && !this.forkedKernelDied()) {
-				// Only signal a forked kernel confirmed still alive: a dead pid may have
-				// been recycled by the OS, and a kill would then hit an unrelated process.
-				process.kill(this.kernelPid, killSignal);
+		if (this.kernel) {
+			const directPid = this.kernel.pid;
+			let signaled = false;
+			try {
+				signaled = this.kernel.kill(killSignal);
+			} catch {
+				// The kernel has already exited.
 			}
-		} catch {
-			// The kernel has already exited.
+			// Same rule as the forked branch below: inactive only when the signal proved the pid still ours.
+			if (directPid !== undefined && signaled) recordOrphanProcessState(directPid, false);
+		} else if (this.forkedKernel) {
+			const forked = this.forkedKernel;
+			// The journal is raw-pid keyed, so inactive is written only on "signaled"
+			// — the one outcome proving the pid still named our un-reaped child. Any
+			// other outcome leaves the record stale-active: the reaper's startId check
+			// neutralizes it, while a wrong inactive write could mask a sibling's
+			// record for a reused pid.
+			void forked
+				.kill(killSignal === "SIGKILL" ? "KILL" : "TERM")
+				.then((outcome) => {
+					if (outcome === "signaled") recordOrphanProcessState(forked.pid, false);
+				})
+				.catch(() => this.appendKernelDiagnostic("forkserver kill unconfirmed; leaving orphan record active"));
 		}
 		this.kernel = undefined;
-		this.kernelPid = undefined;
+		this.forkedKernel = undefined;
 		this.connection = undefined;
 		if (this.tempDir) {
 			try {
@@ -1455,9 +1546,9 @@ export class KernelManager implements ExecutionRuntime {
 			await new Promise<void>((resolve) => kernel.once("exit", () => resolve()));
 			return;
 		}
-		const pid = this.kernelPid;
-		if (pid === undefined) return;
-		while (this.kernelPid === pid && !this.forkedKernelDied()) {
+		const forked = this.forkedKernel;
+		if (!forked) return;
+		while (this.forkedKernel === forked && !(await this.forkedKernelDead(forked))) {
 			await sleep(25);
 		}
 	}
@@ -1482,22 +1573,27 @@ export class KernelManager implements ExecutionRuntime {
 		}
 	}
 
-	async shutdown(opts: { snapshot?: boolean } = {}): Promise<void> {
+	/** Resolves true when this call performed the cleanup (false: a concurrent teardown won). */
+	async shutdown(opts: { snapshot?: boolean } = {}): Promise<boolean> {
 		if (this.state === "shutdown") {
 			liveKernels.delete(this);
 			this.cleanupResources();
-			return;
+			return true;
 		}
+		// Captured before any await: teardowns and newer starts bump the counter.
+		const generation = this.startGeneration;
 		// Best-effort final flush (bounded) before teardown — used by signal handlers
 		// so a SIGINT/SIGTERM exit doesn't lose work the debounced snapshot hasn't saved.
 		if (opts.snapshot) {
 			await this.flushSnapshotForDispose();
+			if (this.startStale(generation)) return false; // superseded mid-flush: the newer owner already cleaned this kernel
 		}
 		this.state = "shutdown";
 		liveKernels.delete(this);
 
 		let replyWait: { promise: Promise<void>; cancel: () => void } | undefined;
 		let shutdownTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+		let performedCleanup = false;
 		const shutdownDeadline = new Promise<never>((_resolve, reject) => {
 			shutdownTimer = globalThis.setTimeout(
 				() => reject(new Error(`Kernel did not shut down within ${KERNEL_SHUTDOWN_TIMEOUT_MS}ms`)),
@@ -1511,8 +1607,13 @@ export class KernelManager implements ExecutionRuntime {
 				replyWait = this.waitForControlReply(msg.header.msg_id, "shutdown_reply", KERNEL_SHUTDOWN_TIMEOUT_MS);
 				const send = this.control.send(encode(msg, this.connection.key));
 				send.catch(() => undefined);
-				await Promise.race([Promise.all([send, replyWait.promise]), shutdownDeadline]);
-				await Promise.race([this.waitForKernelExit(), shutdownDeadline]);
+				// A kernel that exits without delivering shutdown_reply must not stall the deadline.
+				const kernelExit = this.waitForKernelExit();
+				const gracefulReply = Promise.all([send, replyWait.promise]);
+				// Abandoned by the race, a late send failure must not reject unhandled.
+				gracefulReply.catch(() => undefined);
+				await Promise.race([gracefulReply, kernelExit, shutdownDeadline]);
+				await Promise.race([kernelExit, shutdownDeadline]);
 			}
 		} catch (error) {
 			this.appendKernelDiagnostic(
@@ -1521,8 +1622,15 @@ export class KernelManager implements ExecutionRuntime {
 		} finally {
 			if (shutdownTimer) globalThis.clearTimeout(shutdownTimer);
 			replyWait?.cancel();
-			this.cleanupResources();
+			// A superseded shutdown must not tear down the newer start's sockets. Ownership is decided
+			// here, before cleanupResources bumps the generation and would misread this call as superseded.
+			if (!this.startStale(generation)) {
+				this.cleanupResources();
+				performedCleanup = true;
+			}
 		}
+
+		return performedCleanup;
 	}
 
 	async restart(): Promise<void> {
@@ -1673,8 +1781,11 @@ export class KernelManager implements ExecutionRuntime {
 	/** Graceful cleanup. Waits briefly for in-flight host request handlers before closing sockets. */
 	dispose(): Promise<void> {
 		return (async () => {
+			// Captured before any await: teardowns and newer starts bump the counter.
+			const generation = this.startGeneration;
 			// Final namespace flush while the kernel is still live (session end / reload).
 			await this.flushSnapshotForDispose();
+			if (this.startStale(generation)) return; // superseded mid-flush: the newer owner already cleaned this kernel
 			this.state = "shutdown";
 			liveKernels.delete(this);
 			const inFlightHostRequests = [...this.inFlightHostRequests];
@@ -1684,7 +1795,7 @@ export class KernelManager implements ExecutionRuntime {
 					await this.waitForHostRequestsToSettle(inFlightHostRequests, HOST_REQUEST_DISPOSE_TIMEOUT_MS);
 				}
 			} finally {
-				this.cleanupResources();
+				if (!this.startStale(generation)) this.cleanupResources(); // else: superseded, the newer owner already cleaned
 			}
 		})();
 	}

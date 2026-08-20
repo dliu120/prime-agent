@@ -122,6 +122,32 @@ describe("McpManager", () => {
 		expect(manager.listStatus().find((s) => s.server === "linear")?.enabled).toBe(false);
 	});
 
+	it("does not enable a server from a credential bound to a different endpoint or unbound", () => {
+		authStorage.set("mcp:unbound", {
+			type: "oauth",
+			access: "unbound-token",
+			refresh: "r",
+			expires: Date.now() + 3600_000,
+		});
+		authStorage.set("mcp:remote", {
+			type: "oauth",
+			access: "old-token",
+			refresh: "r",
+			expires: Date.now() + 3600_000,
+			endpoint: "https://old.test/mcp",
+		} as never);
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({
+				remote: { type: "http", url: "https://new.test/mcp", oauth: true },
+				unbound: { type: "http", url: "https://srv.test/mcp", oauth: true },
+			}),
+		});
+		expect(manager.listStatus().find((s) => s.server === "remote")?.enabled).toBe(false);
+		expect(manager.listStatus().find((s) => s.server === "unbound")?.enabled).toBe(false);
+		expect(manager.getEnabledGenericServers()).toEqual([]);
+	});
+
 	it("honors a bearer-token env var for user-declared servers", () => {
 		process.env.MY_MCP_TOKEN = "secret";
 		try {
@@ -207,5 +233,60 @@ describe("McpManager", () => {
 			const manager = new McpManager({ authStorage, getUserServers: () => ({ linear: config }) });
 			expect(manager.getDisabledBuiltinSkillOverrides()).toContain("-linear/SKILL.md");
 		}
+	});
+	it("keeps ACP credentials session-scoped and isolated from stored OAuth", async () => {
+		authStorage.set("mcp:task", {
+			type: "oauth",
+			access: "stored-oauth-token",
+			refresh: "refresh",
+			expires: Date.now() + 3600_000,
+			endpoint: "https://user.example/mcp",
+		});
+		const manager = new McpManager({
+			authStorage,
+			getUserServers: () => ({ task: { type: "http", url: "https://user.example/mcp", oauth: true } }),
+		});
+		expect(
+			manager.replaceAcpServers(
+				[
+					{
+						name: "task",
+						type: "http",
+						url: "https://task.example/mcp",
+						headers: { Authorization: "Bearer task-token" },
+					},
+				],
+				"owner-a",
+			),
+		).toBe(true);
+		const handlers = manager.hostHandlers();
+		expect(await handlers["mcp.config"]({ server: "task" })).toEqual({
+			type: "http",
+			url: "https://task.example/mcp",
+			headers: { Authorization: "Bearer task-token" },
+			credentialSource: "acp",
+		});
+		await expect(handlers["mcp.refresh"]({ server: "task" })).rejects.toThrow("does not use host OAuth");
+		expect(manager.getEnabledGenericServers()).toContain("task");
+
+		expect(manager.replaceAcpServers([], "owner-b")).toBe(false);
+		expect(() =>
+			manager.replaceAcpServers(
+				[{ name: "other", type: "http", url: "https://other.example/mcp", headers: {} }],
+				"owner-b",
+			),
+		).toThrow("owned by another client");
+		expect(await handlers["mcp.config"]({ server: "task" })).toMatchObject({
+			url: "https://task.example/mcp",
+			credentialSource: "acp",
+		});
+
+		expect(manager.replaceAcpServers([], "owner-a")).toBe(true);
+		expect(await handlers["mcp.config"]({ server: "task" })).toEqual({
+			type: "http",
+			url: "https://user.example/mcp",
+			oauth: true,
+		});
+		expect(authStorage.get("mcp:task")).toMatchObject({ access: "stored-oauth-token" });
 	});
 });
