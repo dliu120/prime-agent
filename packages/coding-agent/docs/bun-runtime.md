@@ -64,13 +64,13 @@ Reviewed on 2026-08-20 after fetching `upstream/main`.
 
 - Fork head: `7377207462728c5145f5eef4a3527e702f428868`
 - Prior reviewed upstream head: `06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2`
-- Reviewed upstream head: `f8f02221eecad192c65324ebba50037505cfdac6`
-- Commit range: `06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2..f8f02221eecad192c65324ebba50037505cfdac6` (28 commits)
+- Reviewed upstream head: `ab3db326d161bc31f6dbf2491a1a4e9201e6b965`
+- Commit range: `06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2..ab3db326d161bc31f6dbf2491a1a4e9201e6b965` (29 commits)
 - Integration result: merged the current upstream head into the Bun fork, retained the fork's runtime files and parser dependency, advanced the workspace to Prime Agent 0.7.4 and TypeScript 7.0.2, and fixed the source launcher to resolve workspace paths from any caller directory.
 
 | Classification | Upstream changes | Disposition |
 | --- | --- | --- |
-| Already runtime-neutral | Daemon and ACP lifecycle hardening, session-input admission, RLM model/effort selection, compaction continuation, model search, prompt updates, and shared host handlers | Integrated in the shared TypeScript host. Both notebook runtimes receive these behaviors without adapter changes. |
+| Already runtime-neutral | Daemon and ACP lifecycle hardening, session-input admission, RLM model/effort selection, compaction continuation and headless failure settlement, model search, prompt updates, and shared host handlers | Integrated in the shared TypeScript host. Both notebook runtimes receive these behaviors without adapter changes. |
 | Python-specific | Generic MCP client API and dependencies, graceful Jupyter shutdown, and bounded dill snapshots | Integrated in the IPython path. Generic MCP remains a pre-imported Python API and is not advertised when only Bun is active. |
 | Must also be implemented in Bun | Per-binding and aggregate persistence limits, plus removal of oversized live state after compaction | Added bounded V8 snapshots, protocol fields for snapshot limits and pruning, shared execution-runtime pruning, and Bun compaction-state notices. |
 
