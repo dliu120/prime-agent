@@ -153,4 +153,9 @@ export class BunCellEvaluator {
 		Reflect.set(this.context, name, value);
 		this.namespaceNames.add(name);
 	}
+
+	deleteNamespaceValue(name: string): void {
+		Reflect.deleteProperty(this.context, name);
+		this.namespaceNames.delete(name);
+	}
 }

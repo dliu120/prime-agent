@@ -1,0 +1,1 @@
+- Changed the terminal UI package to track upstream Prime Agent 0.8.0 behavior.

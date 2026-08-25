@@ -10,6 +10,8 @@ import type { ExecutionRestoreResult, ExecutionSnapshotResult } from "../executi
 
 /** Default ceiling on a snapshot payload. Over-cap variables are skipped + reported. */
 export const DEFAULT_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
+/** Default ceiling for one serialized variable. */
+export const DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES = 16 * 1024 * 1024;
 
 /** Base filename for the kernel snapshot within a session's artifact directory. */
 const KERNEL_STATE_BASENAME = "kernel-state";
@@ -39,12 +41,18 @@ function pyStr(value: string): string {
  * Python that serializes the user namespace to `outPath` (atomic write) and a
  * sibling `.json` manifest, then prints a single marker line with the result.
  */
-export function buildSnapshotCode(outPath: string, manifestPath: string, maxBytes: number): string {
+export function buildSnapshotCode(
+	outPath: string,
+	manifestPath: string,
+	maxBytes: number,
+	maxVariableBytes = DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES,
+	pruneOversized = false,
+): string {
 	// All builtins are sourced via the locally-imported _b alias so the helper keeps
 	// working even when the user namespace shadows names like list/open/print/len.
 	return `
 def _prime_agent_snapshot_state():
-    import builtins as _b, json, os, sys, datetime
+    import builtins as _b, io, json, os, sys, datetime
     try:
         import dill
     except _b.Exception as _err:
@@ -59,13 +67,28 @@ def _prime_agent_snapshot_state():
         ip = None
     ns = ip.user_ns if ip is not None else _b.globals()
     hidden = _b.set(_b.getattr(ip, "user_ns_hidden", {}) or {}) if ip is not None else _b.set()
-    # rlm and asyncio are re-created by the kernel bootstrap on every start;
-    # never snapshot them.
-    always_skip = {"rlm", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}
+    # rlm, mcp, and asyncio are re-created by the kernel bootstrap on every
+    # start; never snapshot them.
+    always_skip = {"rlm", "mcp", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}
+
+    class SnapshotSizeLimitExceeded(_b.Exception):
+        pass
+
+    class SnapshotBuffer(io.BytesIO):
+        def __init__(self, limit):
+            io.BytesIO.__init__(self)
+            self.limit = limit
+
+        def write(self, chunk):
+            if self.tell() + _b.len(chunk) > self.limit:
+                raise SnapshotSizeLimitExceeded()
+            return io.BytesIO.write(self, chunk)
 
     payload = {}
     skipped = []
+    oversized = []
     total = 0
+    identify_oversized = ${pruneOversized ? "True" : "False"}
     for name in _b.list(ns.keys()):
         # Skip internals (dunder/underscore), IPython-injected names, and live
         # handles. A name matching a builtin (e.g. "list") is a user shadow worth
@@ -73,14 +96,25 @@ def _prime_agent_snapshot_state():
         if name.startswith("_") or name in hidden or name in always_skip:
             continue
         value = ns[name]
+        remaining = ${maxBytes} - total
+        buffer_limit = ${maxVariableBytes} if identify_oversized else _b.min(${maxVariableBytes}, remaining)
+        buffer = SnapshotBuffer(buffer_limit)
         # Modules are pickled by reference and re-imported on restore.
         try:
-            blob = dill.dumps(value)
+            dill.dump(value, buffer)
+            blob = buffer.getvalue()
+        except SnapshotSizeLimitExceeded:
+            if not identify_oversized and remaining < ${maxVariableBytes}:
+                skipped.append({"name": name, "reason": "exceeds aggregate snapshot size cap"})
+            else:
+                skipped.append({"name": name, "reason": "exceeds per-variable snapshot size cap"})
+                oversized.append(name)
+            continue
         except _b.Exception as _err:
             skipped.append({"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]})
             continue
-        if _b.len(blob) > ${maxBytes} or total + _b.len(blob) > ${maxBytes}:
-            skipped.append({"name": name, "reason": "exceeds snapshot size cap"})
+        if total + _b.len(blob) > ${maxBytes}:
+            skipped.append({"name": name, "reason": "exceeds aggregate snapshot size cap"})
             continue
         payload[name] = blob
         total += _b.len(blob)
@@ -101,10 +135,12 @@ def _prime_agent_snapshot_state():
 
     bytes_written = os.path.getsize(${pyStr(outPath)})
     saved = _b.sorted(payload.keys())
+    pruned = _b.sorted(name for name in oversized if name in ns) if ${pruneOversized ? "True" : "False"} else []
     manifest = {
         "version": 1,
         "savedNames": saved,
         "skipped": skipped,
+        "pruned": pruned,
         "bytes": bytes_written,
         "pythonVersion": sys.version.split()[0],
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -114,7 +150,26 @@ def _prime_agent_snapshot_state():
             json.dump(manifest, fh)
     except _b.Exception:
         pass
-    _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"saved": saved, "skipped": skipped, "bytes": bytes_written}))
+    pruned_ids = {_b.id(ns[name]) for name in pruned}
+    while True:
+        try:
+            for name in pruned:
+                if name in ns:
+                    del ns[name]
+            output_cache = ns.get("Out")
+            if _b.isinstance(output_cache, _b.dict):
+                for key in _b.list(output_cache.keys()):
+                    if _b.id(output_cache[key]) in pruned_ids:
+                        del output_cache[key]
+            for name in hidden:
+                if name in ns and _b.id(ns[name]) in pruned_ids:
+                    del ns[name]
+            break
+        except _b.KeyboardInterrupt:
+            # Deletion is idempotent. Finish the short critical section so a
+            # snapshot timeout cannot leave only some purge candidates live.
+            continue
+    _b.print(${pyStr(RESULT_MARKER)} + json.dumps({"saved": saved, "skipped": skipped, "pruned": pruned, "bytes": bytes_written}))
 
 
 try:
@@ -191,7 +246,7 @@ def _prime_agent_list_state_names():
         ip = None
     ns = ip.user_ns if ip is not None else _b.globals()
     hidden = _b.set(_b.getattr(ip, "user_ns_hidden", {}) or {}) if ip is not None else _b.set()
-    always_skip = {"rlm", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}
+    always_skip = {"rlm", "mcp", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}
     names = []
     for name in _b.list(ns.keys()):
         if name.startswith("_") or name in hidden or name in always_skip:
@@ -215,6 +270,7 @@ interface RawListNames {
 interface RawSnapshot {
 	saved?: unknown;
 	skipped?: unknown;
+	pruned?: unknown;
 	bytes?: unknown;
 	error?: unknown;
 }
@@ -257,9 +313,11 @@ function parseMarkerLine<T>(stdout: string): T | null {
 export function parseSnapshotResult(stdout: string, path: string): SnapshotResult | null {
 	const raw = parseMarkerLine<RawSnapshot>(stdout);
 	if (!raw || raw.error) return null;
+	const pruned = asStringArray(raw.pruned);
 	return {
 		saved: asStringArray(raw.saved),
 		skipped: asReasonArray(raw.skipped),
+		pruned: pruned.length > 0 ? pruned : undefined,
 		bytes: typeof raw.bytes === "number" ? raw.bytes : 0,
 		path,
 	};

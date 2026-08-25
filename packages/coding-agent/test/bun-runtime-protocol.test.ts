@@ -96,5 +96,33 @@ describe("Bun runtime protocol", () => {
 				request: { type: "execute", code: "42", maxOutputChars: 0 },
 			}),
 		).toBeNull();
+		expect(
+			parseBunRuntimeHostMessage({
+				version: BUN_RUNTIME_PROTOCOL_VERSION,
+				type: "request",
+				id: "snapshot-1",
+				request: {
+					type: "snapshot",
+					path: "/tmp/state.v8",
+					manifestPath: "/tmp/state.json",
+					maxBytes: 1024,
+					maxVariableBytes: 512,
+					pruneOversized: true,
+				},
+			}),
+		).not.toBeNull();
+		expect(
+			parseBunRuntimeHostMessage({
+				version: BUN_RUNTIME_PROTOCOL_VERSION,
+				type: "request",
+				id: "snapshot-2",
+				request: {
+					type: "snapshot",
+					path: "/tmp/state.v8",
+					manifestPath: "/tmp/state.json",
+					maxVariableBytes: 0,
+				},
+			}),
+		).toBeNull();
 	});
 });

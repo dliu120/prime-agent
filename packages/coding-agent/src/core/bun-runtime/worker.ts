@@ -51,9 +51,14 @@ function execute(id: string, code: string, maxOutputChars?: number): void {
 	void execution.catch((error: unknown) => fail(id, error instanceof Error ? error.message : String(error)));
 }
 
-function snapshot(id: string, path: string, manifestPath: string): void {
+function snapshot(
+	id: string,
+	path: string,
+	manifestPath: string,
+	options: { maxBytes?: number; maxVariableBytes?: number; pruneOversized?: boolean },
+): void {
 	const operation = executionQueue.then(async () => {
-		const result = await snapshotBunState(evaluator, path, manifestPath);
+		const result = await snapshotBunState(evaluator, path, manifestPath, options);
 		respond(id, { type: "snapshot_result", result });
 	});
 	executionQueue = operation.catch(() => undefined);
@@ -96,7 +101,11 @@ function handleLine(line: string): void {
 				respond(message.id, { type: "namespace", names: evaluator.listNamespaceNames() });
 				return;
 			case "snapshot":
-				snapshot(message.id, message.request.path, message.request.manifestPath);
+				snapshot(message.id, message.request.path, message.request.manifestPath, {
+					maxBytes: message.request.maxBytes,
+					maxVariableBytes: message.request.maxVariableBytes,
+					pruneOversized: message.request.pruneOversized,
+				});
 				return;
 			case "restore":
 				restore(message.id, message.request.path, message.request.manifestPath);

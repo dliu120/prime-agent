@@ -66,7 +66,14 @@ export type BunRuntimeRequest =
 	| { type: "ping" }
 	| { type: "shutdown" }
 	| { type: "list_namespace" }
-	| { type: "snapshot"; path: string; manifestPath: string }
+	| {
+			type: "snapshot";
+			path: string;
+			manifestPath: string;
+			maxBytes?: number;
+			maxVariableBytes?: number;
+			pruneOversized?: boolean;
+	  }
 	| { type: "restore"; path: string; manifestPath: string }
 	| { type: "execute"; code: string; maxOutputChars?: number };
 export type BunRuntimeResponse =
@@ -80,6 +87,7 @@ export type BunRuntimeResponse =
 export interface BunRuntimeSnapshotResult {
 	saved: string[];
 	skipped: Array<{ name: string; reason: string }>;
+	pruned?: string[];
 	bytes: number;
 	path: string;
 }
@@ -113,11 +121,17 @@ function isRequest(value: unknown): value is BunRuntimeRequest {
 	if (!isRecord(value)) return false;
 	if (value.type === "ping" || value.type === "shutdown" || value.type === "list_namespace") return true;
 	if (value.type === "snapshot" || value.type === "restore") {
-		return (
+		const validPaths =
 			typeof value.path === "string" &&
 			Boolean(value.path) &&
 			typeof value.manifestPath === "string" &&
-			Boolean(value.manifestPath)
+			Boolean(value.manifestPath);
+		if (!validPaths || value.type === "restore") return validPaths;
+		return (
+			(value.maxBytes === undefined || (Number.isSafeInteger(value.maxBytes) && (value.maxBytes as number) > 0)) &&
+			(value.maxVariableBytes === undefined ||
+				(Number.isSafeInteger(value.maxVariableBytes) && (value.maxVariableBytes as number) > 0)) &&
+			(value.pruneOversized === undefined || typeof value.pruneOversized === "boolean")
 		);
 	}
 	return (
@@ -164,6 +178,7 @@ function isSnapshotResult(value: unknown): value is BunRuntimeSnapshotResult {
 		isRecord(value) &&
 		isStringArray(value.saved) &&
 		isNamedReasonArray(value.skipped) &&
+		(value.pruned === undefined || isStringArray(value.pruned)) &&
 		Number.isSafeInteger(value.bytes) &&
 		(value.bytes as number) >= 0 &&
 		typeof value.path === "string"

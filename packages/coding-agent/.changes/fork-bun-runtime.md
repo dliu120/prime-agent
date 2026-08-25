@@ -1,0 +1,2 @@
+- Added an opt-in `bun` tool for persistent TypeScript cells, typed host requests, rich output, interruption, and bounded best-effort V8 state persistence while retaining IPython as the default.
+- Fixed the source runner failing to resolve workspace packages when invoked outside the repository.

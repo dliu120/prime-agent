@@ -11,6 +11,15 @@ interface SnapshotEntry {
 	length: number;
 }
 
+export const DEFAULT_BUN_SNAPSHOT_MAX_BYTES = 256 * 1024 * 1024;
+export const DEFAULT_BUN_SNAPSHOT_MAX_VARIABLE_BYTES = 16 * 1024 * 1024;
+
+export interface BunSnapshotOptions {
+	maxBytes?: number;
+	maxVariableBytes?: number;
+	pruneOversized?: boolean;
+}
+
 interface SnapshotManifest {
 	version: 1;
 	payloadSha256: string;
@@ -72,14 +81,27 @@ export async function snapshotBunState(
 	evaluator: BunCellEvaluator,
 	path: string,
 	manifestPath: string,
+	options: BunSnapshotOptions = {},
 ): Promise<ExecutionSnapshotResult> {
+	const maxBytes = options.maxBytes ?? DEFAULT_BUN_SNAPSHOT_MAX_BYTES;
+	const maxVariableBytes = options.maxVariableBytes ?? DEFAULT_BUN_SNAPSHOT_MAX_VARIABLE_BYTES;
 	const chunks: Buffer[] = [];
 	const entries: SnapshotEntry[] = [];
 	const skipped: Array<{ name: string; reason: string }> = [];
+	const oversized: string[] = [];
 	let offset = 0;
 	for (const name of evaluator.listNamespaceNames()) {
 		try {
 			const chunk = serialize(evaluator.getNamespaceValue(name));
+			if (chunk.length > maxVariableBytes) {
+				skipped.push({ name, reason: "exceeds per-variable snapshot size cap" });
+				oversized.push(name);
+				continue;
+			}
+			if (offset + chunk.length > maxBytes) {
+				skipped.push({ name, reason: "exceeds aggregate snapshot size cap" });
+				continue;
+			}
 			chunks.push(chunk);
 			entries.push({ name, offset, length: chunk.length });
 			offset += chunk.length;
@@ -96,7 +118,15 @@ export async function snapshotBunState(
 	};
 	await atomicWrite(path, payload);
 	await atomicWrite(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-	return { saved: entries.map((entry) => entry.name), skipped, bytes: payload.length, path };
+	const pruned = options.pruneOversized ? oversized : [];
+	for (const name of pruned) evaluator.deleteNamespaceValue(name);
+	return {
+		saved: entries.map((entry) => entry.name),
+		skipped,
+		...(pruned.length > 0 ? { pruned } : {}),
+		bytes: payload.length,
+		path,
+	};
 }
 
 export async function restoreBunState(

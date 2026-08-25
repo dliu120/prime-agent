@@ -64,6 +64,8 @@ export interface ExecutionRuntimeStartOptions {
 export interface ExecutionSnapshotResult {
 	saved: string[];
 	skipped: { name: string; reason: string }[];
+	/** Oversized live values removed by an explicit compaction snapshot. */
+	pruned?: string[];
 	bytes: number;
 	path: string;
 }
@@ -103,6 +105,7 @@ export interface ExecutionRuntime {
 	kill(): Promise<void>;
 	dispose(): Promise<void>;
 	listNamespaceNames(signal?: AbortSignal): Promise<string[] | null>;
-	snapshotState(): Promise<ExecutionSnapshotResult | null>;
+	snapshotState(signal?: AbortSignal): Promise<ExecutionSnapshotResult | null>;
+	pruneOversizedVariables(signal?: AbortSignal): Promise<ExecutionSnapshotResult | null>;
 	restoreState(): Promise<ExecutionRestoreResult | null>;
 }
