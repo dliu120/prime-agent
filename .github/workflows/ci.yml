@@ -97,6 +97,10 @@ jobs:
             package: packages/coding-agent
             command: npm run test:ci -- --shard=3/3
             install_uv: true
+          - name: coding-agent bun
+            package: packages/coding-agent
+            command: bun ../../node_modules/vitest/dist/cli.js --run test/bun-cell-transform.test.ts test/bun-cell-evaluator.test.ts test/bun-persistence.test.ts
+            install_uv: false
           - name: coding-agent process smoke
             package: packages/coding-agent
             command: npm run test:process
@@ -122,6 +126,7 @@ jobs:
           cache: npm
 
       - name: Setup Bun
+        if: matrix.package == 'packages/coding-agent'
         uses: oven-sh/setup-bun@3d267786b128fe76c2f16a390aa2448b815359f3 # v2.1.2
         with:
           bun-version: latest
