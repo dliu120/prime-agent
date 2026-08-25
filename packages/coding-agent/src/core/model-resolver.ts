@@ -345,9 +345,10 @@ export interface ResolveCliModelResult {
 export function resolveCliModel(options: {
 	cliProvider?: string;
 	cliModel?: string;
+	defaultProvider?: string;
 	modelRegistry: ModelRegistry;
 }): ResolveCliModelResult {
-	const { cliProvider, cliModel, modelRegistry } = options;
+	const { cliProvider, cliModel, defaultProvider, modelRegistry } = options;
 
 	if (!cliModel) {
 		return { model: undefined, warning: undefined, error: undefined };
@@ -362,6 +363,18 @@ export function resolveCliModel(options: {
 			warning: undefined,
 			error: "No models available. Check your installation or add models to models.json.",
 		};
+	}
+	if (!cliProvider && defaultProvider) {
+		const defaultProviderModels = availableModels.filter((candidate) => candidate.provider === defaultProvider);
+		const resolvedDefault = parseModelPattern(cliModel, defaultProviderModels, {
+			allowInvalidThinkingLevelFallback: false,
+		});
+		if (
+			resolvedDefault.model?.id.toLowerCase() === cliModel.toLowerCase() ||
+			resolvedDefault.thinkingLevel !== undefined
+		) {
+			return { ...resolvedDefault, error: undefined };
+		}
 	}
 	const providerMap = new Map<string, string>();
 	for (const m of availableModels) {
@@ -513,10 +526,11 @@ export async function findInitialModel(options: {
 		cachedAvailableModels ??= await modelRegistry.refreshAvailableModels();
 		return cachedAvailableModels;
 	};
-	if (cliProvider && cliModel) {
+	if (cliModel) {
 		const resolved = resolveCliModel({
 			cliProvider,
 			cliModel,
+			defaultProvider,
 			modelRegistry,
 		});
 		if (resolved.error) {

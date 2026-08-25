@@ -449,6 +449,57 @@ describe("default model selection", () => {
 		expect(result.model?.id).toBe("openai/ghost-model");
 	});
 
+	test("prefers an exact configured default-provider model over a matching provider prefix", () => {
+		const modelId = "github-copilot/claude-haiku-4.5";
+		const directCopilotModel: Model<"anthropic-messages"> = {
+			...mockModels[0],
+			id: "claude-haiku-4.5",
+			provider: "github-copilot",
+		};
+		const proxyModel: Model<"anthropic-messages"> = {
+			...mockModels[0],
+			id: modelId,
+			provider: "aiproxy",
+		};
+		const registry = {
+			getAll: () => [directCopilotModel, proxyModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+
+		const result = resolveCliModel({
+			cliModel: modelId,
+			defaultProvider: "aiproxy",
+			modelRegistry: registry,
+		});
+
+		expect(result.model).toBe(proxyModel);
+	});
+
+	test("preserves thinking shorthand when preferring the configured default provider", () => {
+		const modelId = "github-copilot/claude-haiku-4.5";
+		const directCopilotModel: Model<"anthropic-messages"> = {
+			...mockModels[0],
+			id: "claude-haiku-4.5",
+			provider: "github-copilot",
+		};
+		const proxyModel: Model<"anthropic-messages"> = {
+			...mockModels[0],
+			id: modelId,
+			provider: "aiproxy",
+		};
+		const registry = {
+			getAll: () => [directCopilotModel, proxyModel],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRegistry"];
+
+		const result = resolveCliModel({
+			cliModel: `${modelId}:high`,
+			defaultProvider: "aiproxy",
+			modelRegistry: registry,
+		});
+
+		expect(result.model).toBe(proxyModel);
+		expect(result.thinkingLevel).toBe("high");
+	});
+
 	test("findInitialModel uses medium as the built-in default thinking level", async () => {
 		const reasoningModel = mockModels[0];
 		const registry = {

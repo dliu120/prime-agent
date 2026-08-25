@@ -1,0 +1,1 @@
+- Fixed provider-qualified model IDs resolving away from the configured default provider, including model-level thinking shorthand.

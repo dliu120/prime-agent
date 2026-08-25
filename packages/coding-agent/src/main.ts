@@ -525,6 +525,7 @@ function buildSessionOptions(
 		const resolved = resolveCliModel({
 			cliProvider: config.provider,
 			cliModel: config.model,
+			defaultProvider: settingsManager.getDefaultProvider(),
 			modelRegistry,
 		});
 		if (resolved.warning) {
