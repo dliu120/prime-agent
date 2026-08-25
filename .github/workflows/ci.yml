@@ -121,6 +121,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca16515e34017957 # v2.1.2
+        with:
+          bun-version: latest
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
