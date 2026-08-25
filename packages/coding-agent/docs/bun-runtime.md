@@ -60,23 +60,23 @@ Keep this fork's Python/IPython implementation unchanged wherever possible. Afte
 
 ### Last upstream review
 
-Reviewed on 2026-08-20 after fetching `upstream/main`.
+Reviewed on 2026-08-24 after fetching `upstream/main`.
 
-- Fork head: `7377207462728c5145f5eef4a3527e702f428868`
-- Prior reviewed upstream head: `06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2`
-- Reviewed upstream head: `ab3db326d161bc31f6dbf2491a1a4e9201e6b965`
-- Commit range: `06e4a19dc902382dbb90b67fbe4ed53c3f7b99b2..ab3db326d161bc31f6dbf2491a1a4e9201e6b965` (29 commits)
-- Integration result: merged the current upstream head into the Bun fork, retained the fork's runtime files and parser dependency, advanced the workspace to Prime Agent 0.7.4 and TypeScript 7.0.2, and fixed the source launcher to resolve workspace paths from any caller directory.
+- Fork head before this sync: `a1982e93732e18b6653c4864d2fdb2f6a22b1e19`
+- Prior reviewed upstream head: `c75a637b00d3b52762841e72efe92289a0d55b49`
+- Reviewed upstream head: `a9b5d88b52794c7d2234261973205630d4d84d82`
+- Commit range: `c75a637b00d3b52762841e72efe92289a0d55b49..a9b5d88b52794c7d2234261973205630d4d84d82` (15 commits)
+- Integration result: merged the current upstream TypeScript/application head into the Bun fork, retained the fork's Bun runtime files and parser dependency, advanced the workspace to Prime Agent 0.8.0, and intentionally left `prime-agent-runtime/` unchanged.
 
 | Classification | Upstream changes | Disposition |
 | --- | --- | --- |
-| Already runtime-neutral | Daemon and ACP lifecycle hardening, session-input admission, RLM model/effort selection, compaction continuation and headless failure settlement, model search, prompt updates, and shared host handlers | Integrated in the shared TypeScript host. Both notebook runtimes receive these behaviors without adapter changes. |
-| Python-specific | Generic MCP client API and dependencies, graceful Jupyter shutdown, and bounded dill snapshots | Integrated in the IPython path. Generic MCP remains a pre-imported Python API and is not advertised when only Bun is active. |
-| Must also be implemented in Bun | Per-binding and aggregate persistence limits, plus removal of oversized live state after compaction | Added bounded V8 snapshots, protocol fields for snapshot limits and pruning, shared execution-runtime pruning, and Bun compaction-state notices. |
+| Already runtime-neutral | ACP terminal-quiescence fixes, RLM depth defaults and goal settlement, refinement lifecycle/status, model catalog and fast-mode updates, MCP provider refresh, heartbeat filtering, and shared UI rendering | Integrated in the shared TypeScript host. Both notebook runtimes receive the host-side behavior without adapter changes. |
+| Python-specific | No `prime-agent-runtime/` changes were imported in this sync. | The fork-owned Python runtime remains byte-for-byte unchanged from the first parent. |
+| Must also be implemented in Bun | No new Bun adapter parity change was required by this upstream range. | Existing Bun runtime, persistence, and compaction behavior remain intact and covered by the focused suite. |
 
 Intentional differences remain unchanged: Python-backed skills and generic MCP connections belong to IPython; TypeScript-backed skills belong to Bun. Unsupported live Bun values are skipped and recreated after restore. The Bun worker remains a process boundary rather than a security sandbox.
 
-Verification for this review covered the repository gate, the complete Bun-focused suite, the shared compaction suite, the manually resolved daemon suites, real IPython execution/persistence/shutdown, and the Python MCP runtime suite. The managed Python environment required the configured PyPI mirror because direct `files.pythonhosted.org` access was unavailable.
+Verification for this review covered the repository gate, the complete Bun-focused suite, and the shared compaction suite. The Python runtime was excluded from the sync and verified unchanged against the first parent.
 
 Run focused runtime tests from `packages/coding-agent`, then run the repository gate:
 
